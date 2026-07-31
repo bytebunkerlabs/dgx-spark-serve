@@ -65,7 +65,10 @@ def one_run(url, model, prompt, max_tokens, timeout):
             if obj.get("usage"):
                 usage = obj["usage"]
             ch = obj.get("choices") or []
-            if ch and (ch[0].get("delta") or {}).get("content"):
+            delta = (ch[0].get("delta") or {}) if ch else {}
+            # reasoning models stream reasoning_content before content;
+            # both are generated tokens and both count for timing
+            if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
                 now = time.perf_counter()
                 if tfirst is None:
                     tfirst = now
