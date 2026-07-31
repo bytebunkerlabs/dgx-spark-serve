@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# rack — drive the two-Spark serving cluster from anywhere.
+#
+#   rack fit  <hf-id>          will it fit? (asks HuggingFace, does the arithmetic)
+#   rack pull <hf-id>          download + replicate to the worker + verify
+#   rack new  <name> <hf-id>   scaffold a recipe you can edit
+#   rack up   <recipe>         launch (solo or TP=2, from the recipe)
+#   rack down                  stop everything
+#   rack status                what's running, on both nodes
+#   rack logs [-f]             head and worker logs
+#   rack bench [label]         measure the running model
+#   rack chat  <text>          one-shot completion against it
+#
+# Install:  ./rack install     (symlinks into ~/.local/bin or /usr/local/bin)
+set -euo pipefail
+
+# resolve through the symlink so the repo can live anywhere
+SELF=${BASH_SOURCE[0]}
+while [ -L "$SELF" ]; do SELF=$(readlink "$SELF"); done
+ROOT=$(cd "$(dirname "$SELF")" && pwd)
+cd "$ROOT"
+[ -f .env ] && . ./.env
+HEAD_IP=${HEAD_IP:-192.168.100.1}
+WORKER_SSH=${WORKER_SSH:-spark-2}
+HF_CACHE=${HF_CACHE:-$HOME/dgx/hf}
+IMAGE=${IMAGE:-dgx-spark-serve:dev}
+API_PORT=${API_PORT:-8888}
+API=http://127.0.0.1:$API_PORT/v1
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
+die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+have_worker() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$WORKER_SSH" true 2>/dev/null; }
+
+usage() {
+  cat <<'EOF'
+rack — drive the two-Spark serving cluster
+
+  rack fit <hf-id>            will it fit? asks HuggingFace, does the arithmetic
+  rack pull <hf-id>           download, replicate to the worker, verify shards
+  rack models                 what's on disk, and where
+  rack new <name> <hf-id>     scaffold recipes/<name>.env
+  rack recipes                list recipes
+
+  rack build [ngc|upstream|community]   build the image and ship it to the worker
+  rack preflight              read-only health check, both nodes
+  rack up <recipe>            launch — solo or TP=2, whichever the recipe says
+  rack down                   stop serving on both nodes
+  rack status                 containers, memory, API health
+  rack logs [-f] [worker]     engine logs
+  rack bench [label]          measure the running model
+  rack chat <text>            one-shot completion
+
+Recipes live in recipes/. Config is .env. Everything is idempotent.
+EOF
+}
+
+# ---------------------------------------------------------------- fit ------
+cmd_fit() {
+  local id=${1:?usage: rack fit <org/model>}
+  bold "$id"
+  python3 - "$id" "${USABLE_GB:-110}" <<'PY'
+import json, sys, urllib.request
+mid, usable = sys.argv[1], float(sys.argv[2])
+def get(u):
+    with urllib.request.urlopen(u, timeout=60) as r: return json.load(r)
+try:
+    api = get(f"https://huggingface.co/api/models/{mid}?blobs=true")
+except Exception as e:
+    sys.exit(f"  could not reach HuggingFace: {e}")
+sib = api.get("siblings") or []
+disk = sum(s.get("size") or 0 for s in sib)
+shards = sum(1 for s in sib if s["rfilename"].endswith(".safetensors"))
+st = (api.get("safetensors") or {})
+total = st.get("total") or 0
+gb = disk / 1e9
+print(f"  download    {gb:,.1f} GB across {shards} shards")
+if total:
+    print(f"  parameters  {total/1e9:,.1f} B   ({disk*8/total:.2f} effective bpw)")
+# active params, when the config exposes MoE geometry
+try:
+    c = get(f"https://huggingface.co/{mid}/raw/main/config.json")
+    t = c.get("text_config", c)
+    H, L = t.get("hidden_size"), t.get("num_hidden_layers")
+    routed = t.get("n_routed_experts") or t.get("num_experts") or t.get("num_local_experts")
+    if H and L and routed:
+        top = (t.get("num_experts_per_tok") or t.get("num_experts_per_token") or 2)
+        sh = (t.get("n_shared_experts") or t.get("num_shared_experts") or 0)
+        mi = t.get("moe_intermediate_size") or t.get("intermediate_size")
+        w = t.get("routed_expert_hidden_size") or H
+        dense = t.get("first_k_dense_replace") or 0
+        ml = L - dense
+        act = (top + sh) * 3 * w * mi * ml
+        print(f"  active/token ~{act/1e9:,.1f} B in experts  ({top} routed + {sh} shared of {routed})")
+    ctx = t.get("max_position_embeddings")
+    if ctx: print(f"  context     {ctx:,}")
+except Exception:
+    pass
+print()
+for nodes in (1, 2):
+    budget = usable * nodes - 20
+    ok = gb <= budget
+    mark = "fits" if ok else "does not fit"
+    print(f"  {nodes} node{'s' if nodes>1 else ' '}: {gb:,.0f} GB vs {budget:,.0f} GB budget "
+          f"({usable:g} x {nodes} - 20 reserve)  ->  {mark}")
+print("\n  budget assumes 20 GB held back for KV cache and runtime.")
+print("  more at https://fits.bytebunkerlabs.ai")
+PY
+}
+
+# --------------------------------------------------------------- pull ------
+cmd_pull() {
+  local id=${1:?usage: rack pull <org/model>}
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing — run: rack build"
+  bold "downloading $id"
+  docker run --rm -v "$HF_CACHE:/root/.cache/huggingface" --entrypoint bash "$IMAGE" \
+    -c "hf download '$id'"
+  if have_worker; then
+    bold "replicating to $WORKER_SSH over the fabric"
+    "$ROOT/scripts/sync-model.sh" "$id"
+  else
+    dim "worker unreachable — skipping replication (single-node only until you sync)"
+  fi
+  cmd_verify "$id"
+}
+
+cmd_verify() {
+  local id=${1:?} dir="models--${1//\//--}"
+  bold "verifying shards"
+  local script="
+import json,glob,os,sys
+g=glob.glob(os.path.expanduser('$HF_CACHE/hub/$dir/snapshots/*/'))
+if not g: print('  MISSING on this node'); sys.exit(1)
+p=g[0]; f=p+'model.safetensors.index.json'
+if not os.path.exists(f): print('  single-file model, no index'); sys.exit(0)
+i=json.load(open(f)); s=sorted(set(i['weight_map'].values()))
+m=[x for x in s if not os.path.exists(p+x)]
+print(f'  {len(s)} shards, {len(m)} missing')
+sys.exit(1 if m else 0)"
+  printf '  spark-1: '; python3 -c "$script" || die "incomplete on spark-1"
+  if have_worker; then
+    printf '  %s: ' "$WORKER_SSH"
+    ssh -n "$WORKER_SSH" "python3 -c \"$script\"" || die "incomplete on $WORKER_SSH"
+  fi
+}
+
+cmd_models() {
+  bold "on disk"
+  local any=0
+  for d in "$HF_CACHE"/hub/models--*; do
+    [ -d "$d" ] || continue
+    any=1
+    local n=${d##*/models--}; n=${n//--//}
+    printf '  %-52s %s\n' "$n" "$(du -sh "$d" 2>/dev/null | cut -f1)"
+  done
+  [ $any = 1 ] || dim "  nothing cached yet — try: rack pull <org/model>"
+}
+
+cmd_recipes() {
+  bold "recipes"
+  for f in recipes/*.env; do
+    [ -e "$f" ] || { dim "  none yet — try: rack new <name> <org/model>"; return; }
+    local m; m=$(grep -m1 '^MODEL=' "$f" | cut -d= -f2-)
+    local tp="solo"; grep -q 'tensor-parallel-size 2' "$f" && tp="TP=2"
+    printf '  %-34s %-8s %s\n' "$(basename "$f" .env)" "$tp" "$m"
+  done
+}
+
+# ---------------------------------------------------------------- new ------
+cmd_new() {
+  local name=${1:?usage: rack new <name> <org/model>} id=${2:?usage: rack new <name> <org/model>}
+  local f="recipes/$name.env"
+  [ -e "$f" ] && die "$f already exists"
+  cat > "$f" <<EOF
+# $name — scaffolded $(date +%Y-%m-%d) by: rack new
+# Check the fit first:  rack fit $id
+MODEL=$id
+SERVE_ARGS=(
+  --host 0.0.0.0                 # LiteLLM reaches this from its bridge network
+  --port ${API_PORT}
+  --served-model-name $name
+  --trust-remote-code
+  --tensor-parallel-size 2       # drop to 1 if it fits on a single node
+  --gpu-memory-utilization 0.8   # sizing knob, not a speed knob; 0.8 is near the edge
+  --max-model-len 131072         # trade against max-num-seqs; never raise both
+  --max-num-seqs 4
+  --enable-prefix-caching
+  --enable-chunked-prefill
+  --async-scheduling
+  # PIECEWISE: FULL graph capture does not converge on cross-node GB10.
+  # Last resort if startup still fails: --enforce-eager
+  --compilation-config '{"cudagraph_mode":"PIECEWISE","custom_ops":["all"]}'
+)
+ENV_EXTRA=()   # e.g. LAMPORT_RS_SCONV=0 for models with NVLink-assuming collectives
+MODS=()        # e.g. mods/inkling-sm12-paged-kv
+EOF
+  bold "wrote $f"
+  dim "  edit it, then:  rack up $name"
+}
+
+# --------------------------------------------------------- lifecycle ------
+cmd_build()     { "$ROOT/scripts/build.sh" --profile "${1:-community}"; }
+cmd_preflight() {
+  bold "spark-1"; "$ROOT/scripts/preflight.sh" || true
+  if have_worker; then
+    echo; bold "$WORKER_SSH"
+    ssh -n "$WORKER_SSH" "cd dgx/dgx-spark-serve && bash scripts/preflight.sh" || true
+  fi
+}
+
+cmd_up() {
+  local r=${1:?usage: rack up <recipe>}; shift || true
+  local f="recipes/$r.env"; [ -e "$f" ] || f="$r"
+  [ -e "$f" ] || die "no such recipe: $r  (rack recipes)"
+  if grep -q 'tensor-parallel-size 2' "$f"; then
+    bold "launching $f across both nodes"
+    "$ROOT/scripts/launch-cluster.sh" "$f" "$@"
+  else
+    bold "launching $f on this node"
+    "$ROOT/scripts/launch-solo.sh" "$f" "$@"
+  fi
+}
+
+cmd_down() { "$ROOT/scripts/stop-cluster.sh"; }
+
+cmd_status() {
+  bold "containers"
+  docker ps --format '  spark-1  {{.Names}}  {{.Status}}' | grep -E 'serve_' || dim "  spark-1  nothing serving"
+  if have_worker; then
+    ssh -n "$WORKER_SSH" "docker ps --format '  $WORKER_SSH  {{.Names}}  {{.Status}}'" 2>/dev/null \
+      | grep -E 'serve_' || dim "  $WORKER_SSH  nothing serving"
+  fi
+  echo; bold "memory"
+  free -g | awk '/^Mem:/{printf "  spark-1  %s GiB used, %s GiB available\n",$3,$7}'
+  have_worker && ssh -n "$WORKER_SSH" "free -g | awk '/^Mem:/{printf \"  $WORKER_SSH  %s GiB used, %s GiB available\n\",\$3,\$7}'"
+  echo; bold "api"
+  local m
+  if m=$(curl -s --max-time 5 "$API/models" 2>/dev/null); then
+    echo "$m" | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print('  not answering yet'); sys.exit()
+ms=[x['id'] for x in d.get('data',[])]
+print('  serving: ' + (', '.join(ms) if ms else 'no models'))" 2>/dev/null || dim "  not answering yet"
+  else
+    dim "  $API not answering (still loading, or nothing running)"
+  fi
+}
+
+cmd_logs() {
+  local follow="" who="head"
+  for a in "$@"; do case "$a" in -f|--follow) follow="-f";; worker|spark-2) who=worker;; esac; done
+  if [ "$who" = worker ]; then
+    have_worker || die "worker unreachable"
+    ssh ${follow:+-t} "$WORKER_SSH" "docker logs $follow --tail 60 serve_node"
+  else
+    if [ -n "$follow" ]; then tail -f /tmp/*-launch.log 2>/dev/null || docker logs -f --tail 60 serve_node
+    else docker logs --tail 60 serve_node 2>/dev/null || tail -60 /tmp/*-launch.log 2>/dev/null || dim "  no logs yet"
+    fi
+  fi
+}
+
+cmd_bench() {
+  local label=${1:-$(date +%Y%m%d-%H%M)}
+  local model
+  model=$(curl -s --max-time 5 "$API/models" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['data'][0]['id'])
+except Exception: pass" 2>/dev/null || true)
+  [ -n "$model" ] || die "nothing serving on $API — rack up <recipe> first"
+  bold "benchmarking $model"
+  python3 "$ROOT/scripts/bench.py" --url "$API" --model "$model" --label "$label" "${@:2}"
+}
+
+cmd_chat() {
+  [ $# -gt 0 ] || die 'usage: rack chat "your message"'
+  local model
+  model=$(curl -s --max-time 5 "$API/models" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['data'][0]['id'])
+except Exception: pass" 2>/dev/null || true)
+  [ -n "$model" ] || die "nothing serving on $API"
+  python3 - "$API" "$model" "$*" <<'PY'
+import json, sys, urllib.request
+api, model, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
+body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1024, "stream": True}
+req = urllib.request.Request(api + "/chat/completions", data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json"})
+for raw in urllib.request.urlopen(req, timeout=600):
+    line = raw.decode("utf-8", "replace").strip()
+    if not line.startswith("data:"): continue
+    p = line[5:].strip()
+    if p == "[DONE]": break
+    try: d = json.loads(p)
+    except Exception: continue
+    ch = (d.get("choices") or [{}])[0].get("delta") or {}
+    sys.stdout.write(ch.get("content") or "")
+    sys.stdout.flush()
+print()
+PY
+}
+
+cmd_install() {
+  local dir
+  for d in "$HOME/.local/bin" /usr/local/bin; do
+    [ -d "$d" ] && [ -w "$d" ] && { dir=$d; break; }
+  done
+  [ -n "${dir:-}" ] || { mkdir -p "$HOME/.local/bin"; dir="$HOME/.local/bin"; }
+  ln -sf "$ROOT/rack" "$dir/rack"
+  bold "installed: $dir/rack -> $ROOT/rack"
+  case ":$PATH:" in *":$dir:"*) dim "  ready — try: rack status" ;;
+    *) dim "  add to PATH:  echo 'export PATH=\"$dir:\$PATH\"' >> ~/.bashrc && exec bash" ;;
+  esac
+}
+
+case "${1:-}" in
+  fit)       shift; cmd_fit "$@" ;;
+  pull)      shift; cmd_pull "$@" ;;
+  verify)    shift; cmd_verify "$@" ;;
+  models)    shift; cmd_models "$@" ;;
+  recipes)   shift; cmd_recipes "$@" ;;
+  new)       shift; cmd_new "$@" ;;
+  build)     shift; cmd_build "$@" ;;
+  preflight) shift; cmd_preflight "$@" ;;
+  up)        shift; cmd_up "$@" ;;
+  down)      shift; cmd_down "$@" ;;
+  status)    shift; cmd_status "$@" ;;
+  logs)      shift; cmd_logs "$@" ;;
+  bench)     shift; cmd_bench "$@" ;;
+  chat)      shift; cmd_chat "$@" ;;
+  install)   shift; cmd_install "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $1  (rack --help)" ;;
+esac

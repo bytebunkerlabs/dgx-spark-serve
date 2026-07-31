@@ -12,10 +12,46 @@ Host preparation (Docker, firewall, monitoring, overlay network) lives in
 starts where that ends: the fabric is validated, the boxes are clean, and we own everything from
 the container up.
 
+## The `rack` command
+
+One CLI instead of remembering script paths:
+
+```bash
+./rack install          # symlinks into ~/.local/bin (or /usr/local/bin)
+rack --help
+```
+
+```
+rack fit <hf-id>        will it fit? asks HuggingFace, does the arithmetic
+rack pull <hf-id>       download, replicate to the worker, verify shards
+rack new <name> <hf-id> scaffold a recipe you can edit
+rack up <recipe>        launch — solo or TP=2, whichever the recipe says
+rack status             containers, memory, API health, both nodes
+rack logs [-f] [worker] engine logs
+rack bench [label]      measure whatever is running
+rack chat "hello"       one-shot completion
+rack down               stop everything
+```
+
+A new model, start to finish:
+
+```bash
+rack fit deepseek-ai/DeepSeek-V4-Flash-0731     # 167 GB, needs both nodes
+rack pull deepseek-ai/DeepSeek-V4-Flash-0731    # download + replicate + verify
+rack new dsv4 deepseek-ai/DeepSeek-V4-Flash-0731
+rack up dsv4 --debug
+rack bench dsv4-baseline
+```
+
+`rack fit` asks HuggingFace for the real shard sizes and the config's MoE
+geometry, then checks them against your `.env` — so you find out a model
+won't fit *before* the 167 GB download, not after.
+
 ## Quickstart
 
 Two DGX Sparks, cabled and validated ([host prep here](https://github.com/bytebunkerlabs/dgx-spark-setup)).
-Everything below runs **on spark-1** unless labelled otherwise.
+Everything below runs **on spark-1** unless labelled otherwise. These are the
+underlying scripts; `rack` above wraps them.
 
 ```bash
 # 0. get the repo on both nodes, at the same path
