@@ -16,6 +16,14 @@
 #             and its pip-bundled NCCL causes multi-node hangs on Spark
 #             (vllm#42354) — the guard below fixes that.
 #
+#   community eugr/spark-vllm:latest
+#             The field-proven GB10 build: vLLM main compiled for sm_121
+#             (TORCH_CUDA_ARCH_LIST=12.1a), NCCL/FlashInfer rebuilt to match,
+#             scipy/instanttensor/earlyoom included. Needed because the
+#             upstream cu129 wheel stack lacks sm_121 kernel images on the
+#             FA4/tvm_ffi path ("no kernel image is available", measured
+#             2026-07-31). Moving tag — build.sh records the digest.
+#
 # Phase 3 reality check: even v0.26.0 cannot boot Inkling on GB10 unpatched —
 # the sm_12x FA4 fix (vllm#49681) was closed unmerged. The patch is applied at
 # launch time as a mod (scripts/fetch-inkling-mod.sh), not baked in here, so

@@ -22,10 +22,12 @@ done
 case "$PROFILE" in
   ngc)      BASE=nvcr.io/nvidia/vllm:26.07-py3; EXTRAS=0 ;;
   upstream) BASE=vllm/vllm-openai:v0.26.0-aarch64-cu129-ubuntu2404; EXTRAS=1 ;;
-  *) echo "profile must be ngc or upstream" >&2; exit 2 ;;
+  community) BASE=eugr/spark-vllm:latest; EXTRAS=0 ;;
+  *) echo "profile must be ngc, upstream, or community" >&2; exit 2 ;;
 esac
 
 echo "== building $IMAGE from $BASE (profile: $PROFILE)"
+[ "$PROFILE" = community ] && docker pull "$BASE" && docker inspect --format 'community base digest: {{index .RepoDigests 0}}' "$BASE"
 docker build --build-arg BASE_IMAGE="$BASE" --build-arg INSTALL_EXTRAS="$EXTRAS" -t "$IMAGE" .
 
 [ "$SYNC" = 1 ] || exit 0
