@@ -12,6 +12,88 @@ Host preparation (Docker, firewall, monitoring, overlay network) lives in
 starts where that ends: the fabric is validated, the boxes are clean, and we own everything from
 the container up.
 
+## Quickstart
+
+Two DGX Sparks, cabled and validated ([host prep here](https://github.com/bytebunkerlabs/dgx-spark-setup)).
+Everything below runs **on spark-1** unless labelled otherwise.
+
+```bash
+# 0. get the repo on both nodes, at the same path
+git clone https://github.com/bytebunkerlabs/dgx-spark-serve.git ~/dgx/dgx-spark-serve
+cd ~/dgx/dgx-spark-serve && cp .env.example .env      # edit IPs/interfaces if yours differ
+rsync -a --exclude mods . spark-2:dgx/dgx-spark-serve/
+
+# 1. gate: both nodes must be all-PASS before anything else
+scripts/preflight.sh
+ssh spark-2 'cd dgx/dgx-spark-serve && scripts/preflight.sh'
+```
+
+### Serve something small first (one node)
+
+```bash
+scripts/build.sh --profile ngc --no-sync
+scripts/launch-solo.sh recipes/phase1-qwen3-8b.env
+# in another shell:
+scripts/bench.py --model Qwen/Qwen3-8B --label baseline
+```
+
+### Serve Inkling-Small across both nodes
+
+```bash
+# image: the community profile is the one with sm_121 kernels (see below)
+scripts/build.sh --profile community          # builds here, ships to spark-2
+
+# the sm_12x attention patch, pinned with provenance
+scripts/fetch-inkling-mod.sh
+
+# weights: 171 GB, needed on BOTH nodes at the same absolute path
+hf download thinkingmachines/Inkling-Small-NVFP4
+scripts/sync-model.sh thinkingmachines/Inkling-Small-NVFP4
+
+# free the machines — this model wants essentially all of both
+scripts/stop-cluster.sh
+sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+ssh spark-2 "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'"
+
+# launch (add --debug on the first run to see NCCL choose its transport)
+scripts/launch-cluster.sh recipes/inkling-small-nvfp4.env --debug
+```
+
+First boot is slow: ~85 GB streamed per node plus kernel compilation. You're
+waiting for `Application startup complete.`
+
+**The gate that matters** is a log line, not a feeling:
+
+```
+NCCL INFO ... NET/IB       ← RDMA. Real.
+NCCL INFO ... NET/Socket   ← silent TCP fallback. Stop; every number after this is invalid.
+```
+
+Then measure it:
+
+```bash
+scripts/bench.py --url http://127.0.0.1:8888/v1 --model inkling-small --label inkling-baseline
+curl http://127.0.0.1:8888/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"inkling-small","messages":[{"role":"user","content":"hello"}],"max_tokens":64}'
+```
+
+Stop everything with `scripts/stop-cluster.sh`.
+
+### If it fails
+
+| symptom | cause | fix |
+|---|---|---|
+| `no kernel image is available` | image lacks `sm_121` kernels | `--profile community` |
+| `Paged KV not supported on SM 12.0` | FA4 patch missing | `scripts/fetch-inkling-mod.sh` |
+| `No module named 'scipy'` | official image omits it | `--profile community`, or add scipy |
+| startup hangs for hours | FULL cudagraph capture | recipe already uses `PIECEWISE`; last resort `--enforce-eager` |
+| `NET/Socket` in the logs | RDMA unreachable | check `IB_HCAS` lists **both** RoCE twins; ufw allows both fabric interfaces |
+| worker looks silent | it logs on its own box | `ssh spark-2 docker logs -f serve_node` |
+| OOM with memory apparently free | page cache | `drop_caches` on both, then retry |
+
+Full walkthrough with the reasoning behind each flag: [`docs/`](docs/) —
+`00-networking` (the fabric), `01-solo`, `02-cluster`, `03-inkling`, `04-tuning`.
+
 ## The stack, bottom to top
 
 | layer | what | where it's decided |
