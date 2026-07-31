@@ -58,7 +58,7 @@ the gate is green.
 | 0 | fabric + hosts ready (done once by dgx-spark-setup) | `scripts/preflight.sh` all-PASS on both nodes |
 | 1 | solo: our image serves a small model on spark-1 | a completion returns; baseline in `bench/results.jsonl` |
 | 2 | cluster: TP=2 across both, with a model that also fits on one | `NET/IB` in NCCL logs (never `NET/Socket`); bench vs phase 1 |
-| 3 | Inkling-Small-NVFP4 — 266 B total / ~12 B active, 171 GB, needs both boxes | ~55 tok/s decode with MTP; tool calls verified |
+| 3 | Inkling-Small-NVFP4 — 266 B total / ~12 B active, 171 GB, needs both boxes | **passed 2026-07-31: 29.79 tok/s, TTFT 229 ms** |
 | 4 | the loop: one lever at a time, measured | every change lands with before/after numbers in the commit |
 
 Phase 2 deliberately uses a model that fits on one node — that makes the cost of distribution
@@ -85,7 +85,8 @@ bandwidth moved decode by 0.15% — came from exactly this discipline.
 | profile | base | good for | why not everything |
 |---|---|---|---|
 | `ngc` | `nvcr.io/nvidia/vllm:26.07-py3` | phases 1–2 | ships vLLM **0.24** — predates Inkling support and the native `--nnodes` multi-node flags |
-| `upstream` | `vllm/vllm-openai:v0.26.0` (aarch64) | phases 2–3 | cu129 build on a CUDA-13 platform (smoke-test NVFP4 paths); needs the NCCL redirect our Dockerfile applies |
+| `upstream` | `vllm/vllm-openai:v0.26.0` (aarch64) | Inkling-aware, but **not on GB10** | cu129 wheels carry no `sm_121` kernel images on the FA4 path — dies with `no kernel image is available` |
+| `community` | `eugr/spark-vllm` | **phase 3 — the one that works** | vLLM `main` compiled for `sm_121` (`TORCH_CUDA_ARCH_LIST=12.1a`), NCCL and FlashInfer rebuilt to match. Moving tag; `build.sh` records the digest |
 
 `scripts/launch-cluster.sh` probes the image for `--nnodes` before launching and
 refuses with an explanation rather than failing mid-rendezvous.
@@ -102,10 +103,15 @@ Full write-up, including the five-rung failure ladder:
 
 ## Status
 
-| piece | state |
+| phase | state |
 |---|---|
-| preflight, GID diagnostic, model sync, bench harness | built |
-| Dockerfile (two profiles), build + sync, solo/cluster/stop launch | built — verified against primary sources, not yet run on the boxes |
-| recipes: phase 1, phase 2 (solo + TP2), Inkling-Small-NVFP4 | built |
-| Inkling FA4 sm_12x patch | vendored on demand by `scripts/fetch-inkling-mod.sh`, pinned, with provenance and a deletion trigger |
-| first live run | next — phases gate on the boxes being free (the DeepSeek stack currently owns them) |
+| 0 — fabric | passed: 13 checks green on both nodes |
+| 1 — solo | passed: Qwen3-8B, 13.87 tok/s (84% of the bandwidth ceiling) |
+| 2 — solo vs TP=2 control | skipped for now; the control model's weights were lost to a cleanup bug |
+| 3 — Inkling-Small-NVFP4 | **passed: 29.79 tok/s, TTFT 229 ms, KV pool 678k tokens** |
+| 4 — the tuning program | next. First lever: speculative depth, capped at 1 until [vllm#48768](https://github.com/vllm-project/vllm/pull/48768) merges |
+
+The Inkling FA4 `sm_12x` patch is vendored on demand by `scripts/fetch-inkling-mod.sh`,
+pinned by commit, with a deletion trigger naming the upstream PR
+([flash-attention#2348](https://github.com/Dao-AILab/flash-attention/pull/2348))
+whose merge makes it garbage.
