@@ -90,6 +90,16 @@ bandwidth moved decode by 0.15% — came from exactly this discipline.
 `scripts/launch-cluster.sh` probes the image for `--nnodes` before launching and
 refuses with an explanation rather than failing mid-rendezvous.
 
+## Measured
+
+| model | placement | decode | TTFT |
+|---|---|---|---|
+| Inkling-Small-NVFP4 (266B/12B active) | TP=2, both nodes | **29.79 tok/s** | 229 ms |
+| Qwen3-8B (dense, BF16) | one node | 13.87 tok/s | 76 ms |
+
+Full write-up, including the five-rung failure ladder:
+[Inkling-Small on two DGX Sparks](https://blog.bytebunkerlabs.ai/posts/inkling-small-on-two-sparks/).
+
 ## Status
 
 | piece | state |
