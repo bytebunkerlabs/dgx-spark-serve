@@ -130,8 +130,10 @@ start_container "$WORKER_IP"
 
 # Fail before launch, not during: this image's vLLM must have the native
 # multi-node flags (>= 0.26; the NGC 26.07 image's 0.24 predates them).
-docker exec "$CTR" bash -c "vllm serve --help 2>/dev/null | grep -q -- --nnodes" \
-  || { echo "this image's vLLM lacks --nnodes (native multi-node). Use --profile upstream, or NVIDIA's Ray playbook path." >&2; cleanup; exit 1; }
+# Probe EngineArgs, not --help — 0.26.0 accepts --nnodes but hides it there.
+docker exec "$CTR" python3 -c \
+  "from vllm.engine.arg_utils import EngineArgs; assert hasattr(EngineArgs, 'nnodes')" 2>/dev/null \
+  || { echo "this image's vLLM lacks native multi-node (EngineArgs.nnodes). Use --profile upstream, or NVIDIA's Ray playbook path." >&2; cleanup; exit 1; }
 
 for m in "${MODS[@]:-}"; do
   [ -z "$m" ] && continue
