@@ -80,10 +80,22 @@ bench → change one thing → bench → commit with the numbers in the message.
 move a number, it reverts. The interconnect lesson that started this project — doubling fabric
 bandwidth moved decode by 0.15% — came from exactly this discipline.
 
+## Image profiles (the one decision with a fork in it)
+
+| profile | base | good for | why not everything |
+|---|---|---|---|
+| `ngc` | `nvcr.io/nvidia/vllm:26.07-py3` | phases 1–2 | ships vLLM **0.24** — predates Inkling support and the native `--nnodes` multi-node flags |
+| `upstream` | `vllm/vllm-openai:v0.26.0` (aarch64) | phases 2–3 | cu129 build on a CUDA-13 platform (smoke-test NVFP4 paths); needs the NCCL redirect our Dockerfile applies |
+
+`scripts/launch-cluster.sh` probes the image for `--nnodes` before launching and
+refuses with an explanation rather than failing mid-rendezvous.
+
 ## Status
 
 | piece | state |
 |---|---|
-| skeleton, preflight, GID resolver, model sync, bench harness | built |
-| Dockerfile (NGC base tag), launch scripts (multi-node mechanics) | pending the verification pass |
-| Inkling FA4 sm121 patch strategy | pending the verification pass |
+| preflight, GID diagnostic, model sync, bench harness | built |
+| Dockerfile (two profiles), build + sync, solo/cluster/stop launch | built — verified against primary sources, not yet run on the boxes |
+| recipes: phase 1, phase 2 (solo + TP2), Inkling-Small-NVFP4 | built |
+| Inkling FA4 sm_12x patch | vendored on demand by `scripts/fetch-inkling-mod.sh`, pinned, with provenance and a deletion trigger |
+| first live run | next — phases gate on the boxes being free (the DeepSeek stack currently owns them) |

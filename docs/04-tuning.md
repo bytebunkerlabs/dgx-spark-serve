@@ -39,10 +39,38 @@ number for GB10. **[pending]** = to be verified in the phase 4 pass.
 | model | active | quant | nodes | decode tok/s | source |
 |---|---|---|---|---|---|
 | DeepSeek-V4-Flash-DSpark | 13 B | FP4/FP8 | 2 | 66 single / ~150 @6 | this cluster, 2026-07 |
-| Inkling-Small-NVFP4 | ~12 B | NVFP4 | 2 | ~55 (MTP on) | community report — verify in phase 3 |
+| DeepSeek-V4-Flash-DSpark | 13 B | FP4/FP8 + NVFP4 KV | 2 | 35–55 by workload; 55.17 best (code, thinking off, 40.4% MTP acceptance) | classmethod.jp, 2026-07 |
+| gpt-oss-120b | ~5 B | MXFP4 | 1 | ~60 | eugr changelog |
+| Qwen3.6-35B-A3B | ~3 B | FP8 → NVFP4+MTP | 1 | 21 → ~102 | rikkarth / vlaicu — the MTP+NVFP4 case study |
+| Nemotron-3-Super-120B | ~12 B | NVFP4 | 1 | 22.7–23.7 | vLLM official Spark blog |
+| Inkling-Small-NVFP4 | ~12 B | NVFP4 | 2 | **no published number exists** (2026-07-30) — comparables say ~20–25 without effective MTP, 40–65 stretch; k=1 cap until vllm#48768 | phase 3 measures it |
 
-Fill this table only with numbers that have a `results.jsonl` line or a cited source.
-A number without provenance is a rumor.
+An earlier draft of this file attributed 55.17 tok/s to Inkling-Small. It belongs to
+DeepSeek-V4-Flash-DSpark. Fill this table only with numbers that have a `results.jsonl` line or
+a cited source — a number without provenance is a rumor, and the rumor was us, once, already.
+
+Two workload effects bigger than most levers: thinking mode on/off moved DSpark decode 1.32×
+(41.9 → 55.2), and MTP acceptance swung 24.2% → 40.4% with it. Pin thinking mode in benchmarks,
+and always log acceptance — it's the most workload-sensitive number in the whole system.
+
+## The heavier harness, when bench.py isn't enough
+
+`bench.py` is the always-on notebook line. For real sweeps, the serving container already
+carries the standard harness — zero extra deps:
+
+```bash
+docker exec serve_node vllm bench serve \
+  --backend openai-chat --base-url http://localhost:8000 --endpoint /v1/chat/completions \
+  --model MODEL --dataset-name random \
+  --random-input-len 512 --random-output-len 256 --random-range-ratio 0.1 \
+  --num-prompts 8 --num-warmups 2 --max-concurrency 1 --ignore-eos \
+  --percentile-metrics ttft,tpot,itl,e2el --save-result
+# then sweep --max-concurrency 2 4 (num_prompts = 4×C); weekly: --random-input-len 65536
+```
+
+Protocol notes that keep numbers honest: `--ignore-eos` + random prompts defeat prefix-cache
+flattery; single-stream decode tok/s ≈ 1000 / TPOT-p50-ms; never compare across vLLM image tags
+without saying so; JIT warmup means the first request after boot is always garbage.
 
 ## Where the ceiling is
 
