@@ -48,6 +48,9 @@ RUN set -e; \
     if [ "$INSTALL_EXTRAS" = "1" ]; then \
       tv=$(python3 -c "import torch; print(torch.__version__)"); \
       printf 'torch==%s\n' "$tv" > /tmp/torch-pin.txt; \
+      # scipy: Inkling's vision tower imports linear_sum_assignment; the
+      # official image does not ship it (fails at load with ModuleNotFoundError)
+      pip install --no-cache-dir --constraint /tmp/torch-pin.txt scipy; \
       pip install --no-cache-dir --constraint /tmp/torch-pin.txt \
         fastsafetensors instanttensor \
         || echo "extras unavailable on this arch — default loader will be used"; \
