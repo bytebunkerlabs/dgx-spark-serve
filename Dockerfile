@@ -49,7 +49,8 @@ RUN set -e; \
       tv=$(python3 -c "import torch; print(torch.__version__)"); \
       printf 'torch==%s\n' "$tv" > /tmp/torch-pin.txt; \
       pip install --no-cache-dir --constraint /tmp/torch-pin.txt \
-        fastsafetensors instanttensor; \
+        fastsafetensors instanttensor \
+        || echo "extras unavailable on this arch — default loader will be used"; \
     fi
 
 LABEL org.bytebunkerlabs.project="dgx-spark-serve"
