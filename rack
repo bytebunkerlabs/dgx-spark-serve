@@ -208,10 +208,19 @@ cmd_preflight() {
   fi
 }
 
+resolve_recipe() { # exact name, then a path, then a unique prefix — `rack up inkling`
+  local r=$1                                  # should find inkling-small-nvfp4.env
+  [ -e "recipes/$r.env" ] && { printf 'recipes/%s.env' "$r"; return; }
+  [ -e "$r" ] && { printf '%s' "$r"; return; }
+  local m=(recipes/"$r"*.env)
+  [ -e "${m[0]}" ] || die "no such recipe: $r  (rack recipes)"
+  [ ${#m[@]} -eq 1 ] || die "ambiguous: $r matches ${m[*]//recipes\//}"
+  printf '%s' "${m[0]}"
+}
+
 cmd_up() {
   local r=${1:?usage: rack up <recipe>}; shift || true
-  local f="recipes/$r.env"; [ -e "$f" ] || f="$r"
-  [ -e "$f" ] || die "no such recipe: $r  (rack recipes)"
+  local f; f=$(resolve_recipe "$r")
   if grep -q 'tensor-parallel-size 2' "$f"; then
     bold "launching $f across both nodes"
     "$ROOT/scripts/launch-cluster.sh" "$f" "$@"
