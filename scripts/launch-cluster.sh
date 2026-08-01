@@ -78,6 +78,9 @@ env_flags() { # per-node container env. The Spark-specific line is NCCL_IB_HCA:
 
 start_container() { # idle keep-alive; --privileged covers RDMA verbs + memlock
   local ip=$1
+  # a previous launch that died mid-start leaves this container behind; remove
+  # it rather than failing with a name conflict the user has to clean by hand
+  run_on "$ip" docker rm -f "$CTR" >/dev/null 2>&1 || true
   run_on "$ip" docker run -d --rm --name "$CTR" --network host --gpus all \
     --privileged --ipc=host --ulimit nofile=1048576:1048576 --entrypoint= \
     $(env_flags "$ip") \
@@ -121,7 +124,7 @@ cleanup() {
   docker stop "$CTR" >/dev/null 2>&1 || true
   ssh "$WORKER_SSH" "docker stop $CTR" >/dev/null 2>&1 || true
 }
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
 # --- go ----------------------------------------------------------------------
 echo "== starting idle containers ($IMAGE)"
