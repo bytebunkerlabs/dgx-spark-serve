@@ -28,6 +28,11 @@ for m in "${MODS[@]:-}"; do
   done < <(find "$m/overlay" -type f)
 done
 
+# Best effort, same as cluster: on unified memory, cached file pages and GPU
+# allocations share one pool — reclaim before a big load.
+sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null \
+  || echo "note: could not drop caches (no passwordless sudo) — fine unless memory is tight"
+
 # Foreground, --rm: Ctrl-C stops and removes it. Host networking so the API is
 # on the box's real interfaces (bind carefully — the gateway fronts this).
 exec docker run --rm --name serve_solo --network host --gpus all --ipc=host \
