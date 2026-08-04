@@ -1,7 +1,7 @@
 # h3-fp8-0.26 — MiniMax-H3 online FP8, backported onto the v0.26.0 image
 
 Upstream merged H3-aware FP8 (vllm-project/vllm-omni#5737, commit
-`b9a51592f0`, Apache-2.0) three hours AFTER the v0.26.0 release was cut, so
+`b9a51592f0`, Apache-2.0) 27 hours AFTER the v0.26.0 release was cut (08-03 08:26 -> 08-04 11:35 UTC), so
 no published image has it — and without FP8 the DiT alone pushes the weights
 past one Spark's 128 GB. The day-0 `minimax-h3` tag crashes in this exact
 path (its dev-snapshot omni calls H3's 2-arg fc1 weight loader with 3 args
