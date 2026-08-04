@@ -16,6 +16,18 @@ SERVE_ARGS=() ENV_EXTRA=() MODS=()
 envs=()
 for kv in "${ENV_EXTRA[@]:-}"; do [ -z "$kv" ] || envs+=(-e "$kv"); done
 
+# Mods, solo flavor: cluster mode execs a run.sh inside a live container, but
+# solo is one docker run — so a mod's overlay/ tree is bind-mounted file by
+# file over the image, read-only. overlay/ mirrors the container filesystem.
+mounts=()
+for m in "${MODS[@]:-}"; do
+  [ -z "$m" ] && continue
+  [ -d "$m/overlay" ] || { echo "mod has no overlay/ dir: $m" >&2; exit 1; }
+  while IFS= read -r f; do
+    mounts+=(-v "$PWD/$f:${f#"$m"/overlay}:ro")
+  done < <(find "$m/overlay" -type f)
+done
+
 # Foreground, --rm: Ctrl-C stops and removes it. Host networking so the API is
 # on the box's real interfaces (bind carefully — the gateway fronts this).
 exec docker run --rm --name serve_solo --network host --gpus all --ipc=host \
@@ -23,6 +35,7 @@ exec docker run --rm --name serve_solo --network host --gpus all --ipc=host \
   -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" \
   "${envs[@]}" \
   -v "$HF_CACHE:/root/.cache/huggingface" \
+  ${mounts[@]+"${mounts[@]}"} \
   -v "$HOME/.cache/vllm:/root/.cache/vllm" \
   -v "$HOME/.cache/flashinfer:/root/.cache/flashinfer" \
   -v "$HOME/.triton:/root/.triton" \
