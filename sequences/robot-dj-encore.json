@@ -1,0 +1,10 @@
+{
+  "name": "robot-dj-encore",
+  "engine": "http://127.0.0.1:8091",
+  "defaults": {"width": 672, "height": 384, "steps": 30, "seed": 42, "duration": 5.0},
+  "shots": [
+    {"use": "/tmp/robot-dj.mp4"},
+    {"prompt": "The tiny robot DJ scratches the miniature turntable faster and pumps one gripper arm to the beat. The hard-drive disco ball overhead spins faster, streaking flecks of light across the server rack while the rack LEDs strobe in sync with the music. Same dim basement lab, same low angle, teal and amber lighting, shallow depth of field. Sound: the upbeat lo-fi electronic groove rises with a filter sweep and quicker vinyl scratches over the steady low hum of server fans."},
+    {"prompt": "The tiny robot DJ raises both gripper arms in triumph as the beat drops. The disco ball flares bright and tiny paper confetti drifts down through the shafts of light. The camera pulls back slowly to reveal the whole server rack glowing in the dim basement lab, teal and amber lighting. Sound: the groove lands on a playful chime melody with a soft crowd cheer, vinyl crackle, and the low server-fan hum carrying underneath."}
+  ]
+}
