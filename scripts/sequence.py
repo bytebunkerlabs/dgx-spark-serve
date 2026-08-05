@@ -23,6 +23,25 @@ with no predecessor goes text-to-video; every later shot goes
 first-frame-to-video, conditioned on the LAST FRAME of the previous
 shot's clip. That is the whole continuity trick.
 
+For multi-engine parallelism, use "scenes" + "engines" instead of a flat
+"shots" list:
+
+    {
+      "name": "my-film",
+      "engines": ["http://127.0.0.1:8091", "http://127.0.0.1:8092"],
+      "defaults": {...},
+      "scenes": [
+        {"shots": [{"prompt": "..."}, {"prompt": "..."}]},
+        {"shots": [{"prompt": "..."}, {"prompt": "..."}]}
+      ]
+    }
+
+A scene is one continuity chain; scene boundaries are deliberate hard
+cuts (no frame handoff across them — repeat the world's description in
+each scene's prompts to keep the look). Scenes render CONCURRENTLY, one
+engine each, because a chain itself cannot parallelize: shot N+1 starts
+on shot N's last frame. The final stitch is always story order.
+
 Everything lands in sequences/<name>/: shotNN.mp4, shotNN-last.jpg, and
 final.mp4. Re-running skips shots whose mp4 already exists — a 10-hour
 sequence must survive interruptions (and, until vllm-omni#5793 lands, a
@@ -144,38 +163,69 @@ def render(engine, params, ref_frame, out_path):
         api_retry(engine, f"/v1/videos/{jid}/content", raw=True))
 
 
-def main():
-    if len(sys.argv) != 2:
-        die("usage: sequence.py <shots.json>")
-    spec = json.load(open(sys.argv[1]))
-    name = spec["name"]
-    engine = spec.get("engine", "http://127.0.0.1:8091")
-    dflt = {"width": 672, "height": 384, "steps": 30, "seed": None,
-            "duration": 5.0} | spec.get("defaults", {})
-    workdir = os.path.abspath(os.path.join("sequences", name))
-    os.makedirs(workdir, exist_ok=True)
-
+def run_scene(scene_idx, shots, dflt, engine, workdir):
+    """Render one scene's chain, sequentially, on one engine. A chain cannot
+    parallelize — shot N+1 starts on shot N's last frame — so the unit of
+    parallelism is the scene, and scene boundaries are deliberate hard cuts."""
+    tag = f"scene{scene_idx:02d}"
     clips = []
     prev_frame = None
-    for i, shot in enumerate(spec["shots"], 1):
-        clip = os.path.join(workdir, f"shot{i:02d}.mp4")
+    for j, shot in enumerate(shots, 1):
+        clip = os.path.join(workdir, f"{tag}-shot{j:02d}.mp4")
         if "use" in shot:
             if not os.path.exists(clip):
                 shutil.copy(shot["use"], clip)
-            print(f"shot {i}: existing clip {shot['use']}")
+            print(f"{tag} shot {j}: existing clip {shot['use']}", flush=True)
         elif os.path.exists(clip):
-            print(f"shot {i}: already rendered, skipping")
+            print(f"{tag} shot {j}: already rendered, skipping", flush=True)
         else:
             params = dflt | shot
-            print(f"shot {i}: rendering — {shot['prompt'][:60]}…")
+            print(f"{tag} shot {j} [{engine}]: {shot['prompt'][:55]}…", flush=True)
             render(engine, params, prev_frame, clip)
-        frame = os.path.join(workdir, f"shot{i:02d}-last.jpg")
+        frame = os.path.join(workdir, f"{tag}-shot{j:02d}-last.jpg")
         ffmpeg(workdir, "-sseof", "-0.15", "-i", os.path.basename(clip),
                "-update", "1", "-frames:v", "1", "-q:v", "2",
                os.path.basename(frame))
         prev_frame = frame
         clips.append(clip)
+    return clips
 
+
+def main():
+    if len(sys.argv) != 2:
+        die("usage: sequence.py <shots.json>")
+    spec = json.load(open(sys.argv[1]))
+    name = spec["name"]
+    engines = spec.get("engines") or [spec.get("engine", "http://127.0.0.1:8091")]
+    dflt = {"width": 672, "height": 384, "steps": 30, "seed": None,
+            "duration": 5.0} | spec.get("defaults", {})
+    workdir = os.path.abspath(os.path.join("sequences", name))
+    os.makedirs(workdir, exist_ok=True)
+
+    # "shots" = one scene (the pilot's shape); "scenes" = list of chains.
+    scenes = ([{"shots": spec["shots"]}] if "shots" in spec
+              else spec["scenes"])
+    print(f"{len(scenes)} scene(s) across {len(engines)} engine(s)", flush=True)
+
+    # Engine pool: each scene checks an engine out for its whole chain.
+    import concurrent.futures
+    import queue
+    pool = queue.Queue()
+    for e in engines:
+        pool.put(e)
+
+    def worker(idx, scene):
+        engine = pool.get()
+        try:
+            return run_scene(idx, scene["shots"], dflt, engine, workdir)
+        finally:
+            pool.put(engine)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as ex:
+        futures = [ex.submit(worker, i, s) for i, s in enumerate(scenes, 1)]
+        results = [f.result() for f in futures]  # story order, not finish order
+
+    clips = [c for scene_clips in results for c in scene_clips]
     concat = os.path.join(workdir, "concat.txt")
     open(concat, "w").write(
         "".join(f"file '{os.path.basename(c)}'\n" for c in clips))
