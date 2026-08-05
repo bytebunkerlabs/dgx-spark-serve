@@ -68,7 +68,14 @@ env_flags() { # per-node container env. The Spark-specific line is NCCL_IB_HCA:
     -e "TP_SOCKET_IFNAME=$FABRIC_IF" -e "UCX_NET_DEVICES=$FABRIC_IF"
     -e "NCCL_IB_HCA=$IB_HCAS" -e "NCCL_IB_DISABLE=0"
     -e "NCCL_IGNORE_CPU_AFFINITY=1"
-    -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+    -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+    # local means local: weights come from the mounted cache, vLLM's usage
+    # telemetry (stats.vllm.ai) stays off, and the HF hub client never
+    # phones home for metadata. Verify anytime with: rack net.
+    # A recipe that genuinely needs the hub at runtime can override in
+    # ENV_EXTRA — later -e wins.
+    -e "HF_HUB_OFFLINE=1" -e "TRANSFORMERS_OFFLINE=1"
+    -e "VLLM_NO_USAGE_STATS=1" -e "DO_NOT_TRACK=1")
   # No NCCL_IB_GID_INDEX — ever. NCCL >= 2.21 selects the RoCEv2/IPv4 GID
   # itself when the index is left unset; a stored index rots (docs/00).
   [ "$DEBUG" = "--debug" ] && f+=(-e "NCCL_DEBUG=INFO")

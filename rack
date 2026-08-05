@@ -50,6 +50,7 @@ rack — drive the two-Spark serving cluster
   rack logs [-f] [worker]     engine logs
   rack bench [label]          measure the running model
   rack chat <text>            one-shot completion
+  rack net                    does the engine talk to the internet? verdict, both nodes
 
 Recipes live in recipes/. Config is .env. Everything is idempotent.
 EOF
@@ -275,6 +276,15 @@ cmd_logs() {
   fi
 }
 
+cmd_net() {
+  bold "spark-1"
+  bash "$ROOT/scripts/netcheck.sh" || true
+  if have_worker; then
+    echo; bold "$WORKER_SSH"
+    ssh -n "$WORKER_SSH" "cd dgx/dgx-spark-serve && bash scripts/netcheck.sh" || true
+  fi
+}
+
 cmd_bench() {
   local label=${1:-$(date +%Y%m%d-%H%M)}
   local model
@@ -342,6 +352,7 @@ case "${1:-}" in
   down)      shift; cmd_down "$@" ;;
   status)    shift; cmd_status "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
+  net)       shift; cmd_net "$@" ;;
   bench)     shift; cmd_bench "$@" ;;
   chat)      shift; cmd_chat "$@" ;;
   install)   shift; cmd_install "$@" ;;

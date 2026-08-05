@@ -42,6 +42,8 @@ exec docker run --rm --name serve_solo --network host --gpus all --ipc=host \
   --log-driver journald \
   --ulimit nofile=1048576:1048576 \
   -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" \
+  -e "HF_HUB_OFFLINE=1" -e "TRANSFORMERS_OFFLINE=1" \
+  -e "VLLM_NO_USAGE_STATS=1" -e "DO_NOT_TRACK=1" \
   "${envs[@]}" \
   -v "$HF_CACHE:/root/.cache/huggingface" \
   ${mounts[@]+"${mounts[@]}"} \
