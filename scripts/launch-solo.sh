@@ -35,7 +35,11 @@ sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null \
 
 # Foreground, --rm: Ctrl-C stops and removes it. Host networking so the API is
 # on the box's real interfaces (bind carefully — the gateway fronts this).
+# journald keeps the log after --rm deletes the container — a crash trace
+# must outlive the thing that crashed. Read old runs with:
+#   journalctl CONTAINER_NAME=serve_solo --since "2 hours ago"
 exec docker run --rm --name serve_solo --network host --gpus all --ipc=host \
+  --log-driver journald \
   --ulimit nofile=1048576:1048576 \
   -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" \
   "${envs[@]}" \
