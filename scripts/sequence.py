@@ -86,6 +86,25 @@ def api(engine, path, data=None, ctype=None, raw=False):
     return body if raw else json.loads(body)
 
 
+def api_retry(engine, path, tries=8, **kw):
+    """A slow poll must never kill a ten-hour sequence. The engine's API can
+    go near-unresponsive for minutes during torch.compile warmup (measured:
+    a status GET blew a 120 s socket timeout while the render itself was
+    fine) — so reads retry with backoff. Submissions do NOT come through
+    here: a timed-out submit may still have created a job, and a blind retry
+    would render the same shot twice."""
+    for i in range(tries):
+        try:
+            return api(engine, path, **kw)
+        except Exception as e:  # noqa: BLE001 — deliberate: retry any transport error
+            if i == tries - 1:
+                raise
+            wait = 30 * (i + 1)
+            print(f"  poll error ({type(e).__name__}: {e}); retry in {wait}s",
+                  flush=True)
+            time.sleep(wait)
+
+
 def render(engine, params, ref_frame, out_path):
     fields = {
         "prompt": params["prompt"],
@@ -111,17 +130,18 @@ def render(engine, params, ref_frame, out_path):
     t0 = time.time()
     while True:
         time.sleep(POLL_S)
-        j = api(engine, f"/v1/videos/{jid}")
+        j = api_retry(engine, f"/v1/videos/{jid}")
         st = j.get("status")
         if st == "completed":
-            print(f"  completed in {j.get('inference_time_s', 0):.0f}s")
+            print(f"  completed in {j.get('inference_time_s', 0):.0f}s", flush=True)
             break
         if st not in ("queued", "in_progress"):
             die(f"job {jid} ended '{st}': {j.get('error')} — "
                 "the engine likely needs a restart before retrying (#5793)")
         if time.time() - t0 > SHOT_TIMEOUT_S:
             die(f"job {jid} exceeded {SHOT_TIMEOUT_S}s")
-    open(out_path, "wb").write(api(engine, f"/v1/videos/{jid}/content", raw=True))
+    open(out_path, "wb").write(
+        api_retry(engine, f"/v1/videos/{jid}/content", raw=True))
 
 
 def main():
