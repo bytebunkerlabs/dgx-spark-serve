@@ -1,0 +1,85 @@
+{
+  "name": "ramadan-day",
+  "engines": ["http://127.0.0.1:8091", "http://192.168.100.2:8091"],
+  "defaults": {"width": 672, "height": 384, "steps": 30, "seed": 42, "duration": 6.0},
+  "scenes": [
+
+    {"shots": [
+      {"prompt": "A sand-colored city sleeps under a deep blue pre-dawn sky, a domed mosque with a slender minaret on the skyline, a few windows glowing warm gold. The camera drifts slowly over the rooftops. Cinematic, shallow depth of field. Sound: soft night wind, distant quiet, a single bird beginning to stir."},
+      {"prompt": "Inside a dark family home, a hand lights a brass lantern and warm golden light fills a small kitchen with clay bowls and bread on the counter. The camera holds gently. Cinematic, shallow depth of field, warm golden lantern light. Sound: the soft click and hiss of the lantern, quiet footsteps, a kettle set down softly."},
+      {"prompt": "A family sits around a low table in warm golden lantern light, sharing a quiet pre-dawn meal of dates, bread, and yogurt, speaking softly and smiling sleepily. The camera slowly circles the table. Cinematic, shallow depth of field. Sound: quiet murmured conversation, gentle clink of dishes, a soft laugh."},
+      {"prompt": "Close on hands pouring water from a clay jug into a glass, warm golden lantern light catching the stream; someone drinks deeply and sets the glass down with care. Cinematic, shallow depth of field. Sound: water pouring and being sipped, a satisfied breath, quiet room tone."},
+      {"prompt": "Through the kitchen window the deep blue sky shows the faintest line of light on the horizon of the sand-colored city; the family clears the plates as the lantern glows. The camera pushes slowly toward the window. Cinematic, shallow depth of field, warm golden lantern light. Sound: dishes gathered gently, a hush falling, distant first birdsong."}
+    ]},
+
+    {"shots": [
+      {"prompt": "The dark skyline of the sand-colored city with its domed mosque and slender minaret, the horizon barely lightening; warm lights blink on in scattered windows. The camera holds wide and still. Cinematic, shallow depth of field. Sound: the call to prayer rings out, melodic and distant, echoing over the quiet rooftops."},
+      {"prompt": "Close on hands and forearms washing with water from a small basin in soft lamplight, unhurried and deliberate, drops catching the light. Cinematic, shallow depth of field, warm golden light. Sound: gentle water splashing, quiet breathing, the distant call to prayer continuing faintly."},
+      {"prompt": "In a softly lit room a patterned prayer rug is unrolled onto the floor with a gentle flourish, warm lamplight and long shadows. The camera follows the rug settling. Cinematic, shallow depth of field. Sound: the soft rustle of the rug, quiet footsteps, distant melodic prayer call fading."},
+      {"prompt": "A family stands together in prayer in a softly lit room, silhouetted against a window where deep blue dawn light rises over the sand-colored city; they bow together in unison. Cinematic, reverent, shallow depth of field. Sound: hushed recitation, soft rustle of clothing, deep quiet underneath."},
+      {"prompt": "The domed mosque of the sand-colored city in first light, worshippers in warm robes stepping out into the cool morning and greeting one another quietly. The camera watches from across the square. Cinematic, shallow depth of field. Sound: soft footsteps on stone, murmured greetings, morning birds."}
+    ]},
+
+    {"shots": [
+      {"prompt": "Sunrise floods the sand-colored city with amber light, the domed mosque and slender minaret glowing on the skyline as the streets slowly wake. The camera drifts over rooftops toward the sun. Cinematic, shallow depth of field. Sound: a city gently waking, distant shutters opening, birds in full song."},
+      {"prompt": "A narrow market street of the sand-colored city in morning light, shops opening their shutters but the tea stalls quiet and coffee pots unlit, people walking calmly with bags and books. Cinematic, shallow depth of field. Sound: footsteps, a bicycle bell, quiet morning bustle without any clatter of cups."},
+      {"prompt": "A man at a wooden desk by a bright window works with steady focus, papers and a laptop before him, morning light across the room; no cup or plate anywhere on the desk. Cinematic, shallow depth of field. Sound: keyboard taps, pages turning, calm room tone."},
+      {"prompt": "A simple wall clock in a sunlit room ticks past mid-morning; dust motes drift through the light above an empty kitchen table, chairs neatly tucked in. The camera pushes in slowly on the clock. Cinematic, shallow depth of field. Sound: the clock ticking steadily, distant street sounds, a quiet house."}
+    ]},
+
+    {"shots": [
+      {"prompt": "High noon over the sand-colored city, the sun blazing white, heat shimmering over rooftops around the domed mosque and slender minaret. The camera tilts down from the sun to the streets. Cinematic, shallow depth of field. Sound: a hot dry wind, cicadas, the city moving slowly."},
+      {"prompt": "Close on a full glass of water on a sunlit desk, condensation beading and sliding down; behind it a man keeps working and never reaches for it. The camera holds on the untouched glass. Cinematic, shallow depth of field. Sound: quiet keyboard taps, the clock ticking, a slow patient breath."},
+      {"prompt": "The man leans back in his chair, closes his eyes and breathes slowly, sunlight across his face; a small resolute smile settles as he returns to his work. Cinematic, shallow depth of field, warm light. Sound: one long slow breath in and out, quiet room tone, faint city hum."},
+      {"prompt": "Children chase a ball down a sunlit alley of the sand-colored city while an elderly man on a doorstep watches them with a warm knowing smile, prayer beads loose in his hand. Cinematic, shallow depth of field. Sound: children laughing, a ball bouncing on stone, a soft chuckle."},
+      {"prompt": "Close on weathered hands slowly passing prayer beads one by one in the shade of a doorway, midday light blazing on the street beyond. Cinematic, shallow depth of field. Sound: the faint click of beads, hot wind, distant children fading."}
+    ]},
+
+    {"shots": [
+      {"prompt": "Late afternoon light turns the sand-colored city honey-gold; a man walks home slowly along a long shadowed street, steps heavy but even, the domed mosque on the skyline behind him. Cinematic, shallow depth of field. Sound: slow footsteps on stone, a tired exhale, warm wind."},
+      {"prompt": "At a desk in golden afternoon light a man's eyelids grow heavy, his head dips and he catches himself, blinking slowly back to his papers. Cinematic, shallow depth of field. Sound: a long quiet yawn, papers shifting, the clock ticking slower."},
+      {"prompt": "A quiet kitchen in golden light, the kettle cold and unlit on the stove, clean cups waiting upside down on a shelf; the camera drifts past them to a window full of soft sky. Cinematic, shallow depth of field. Sound: deep house quiet, a distant dove, the faint hum of the city."},
+      {"prompt": "The man rests his head on his hand by the window, eyes half closed, honey-gold light on his face, the city soft and slow behind the glass. Cinematic, shallow depth of field. Sound: slow calm breathing, muffled street sounds, a gentle wind chime."},
+      {"prompt": "From the window the sun sits visibly lower over the sand-colored city, shadows long between the houses, the domed mosque catching the deepening gold. The camera pushes slowly toward the horizon. Cinematic, shallow depth of field. Sound: the city stirring faintly, doves, a first cooking pot clinking somewhere far away."}
+    ]},
+
+    {"shots": [
+      {"prompt": "By a bright window a man reads from a large open book on a wooden stand, tracing lines slowly with his finger, golden light across the pages. Reverent, cinematic, shallow depth of field. Sound: soft melodic recitation under the breath, a page turning, deep quiet."},
+      {"prompt": "Hands pack cardboard boxes with rice, lentils, dates and bread on a family table, folding the flaps closed with care; several finished boxes wait in a neat row. Cinematic, shallow depth of field, warm light. Sound: rustling paper and grain, cardboard folding, quiet purposeful movement."},
+      {"prompt": "At a doorway in golden light a man hands a full bag of dates and bread to an elderly neighbor, who receives it with both hands and a deep warm smile; they touch hands to hearts. Cinematic, shallow depth of field. Sound: warm murmured thanks, a quiet blessing, doves on the rooftops."},
+      {"prompt": "The elderly neighbor walks away down the honey-lit street with the bag held close, past children carrying a box together toward another door in the sand-colored city. Cinematic, shallow depth of field. Sound: light footsteps, children's earnest voices, warm evening wind."}
+    ]},
+
+    {"shots": [
+      {"prompt": "A family kitchen springs to life in warm golden light: hands chop herbs fast on a wooden board, onions hit a hot pan, steam rises. The camera moves briskly along the counter. Cinematic, shallow depth of field. Sound: rapid chopping, a sizzling pan, a kitchen humming with purpose."},
+      {"prompt": "A big pot of soup simmers, lentils and vegetables turning slowly as a wooden spoon stirs; steam curls up into warm golden lantern light. Close and rich, shallow depth of field. Sound: gentle bubbling, the spoon scraping softly, a lid set down."},
+      {"prompt": "Hands arrange plump dates in a ring on a brass plate, place small glasses of water beside it, and set the plate at the center of a long family table. Warm golden lantern light, cinematic, shallow depth of field. Sound: dates placed softly, glasses set down one by one, quiet anticipation."},
+      {"prompt": "A brass lantern is lit at the center of the set table as sunset colors pour through the window, dishes of food arriving one by one from the kitchen. Cinematic, shallow depth of field, warm golden lantern light. Sound: the lantern's soft hiss, dishes landing gently, family voices gathering."},
+      {"prompt": "The family takes their places around the full table, hands in their laps, eyes bright, no one touching the food; through the window the sun leans on the horizon of the sand-colored city. Cinematic, shallow depth of field. Sound: expectant quiet, a small child's whisper, someone gently shushing with a smile."}
+    ]},
+
+    {"shots": [
+      {"prompt": "The sun touches the horizon directly behind the domed mosque and slender minaret of the sand-colored city, the sky burning orange and rose. The camera holds wide as the light slips lower. Cinematic, shallow depth of field. Sound: the evening call to prayer beginning, melodic and clear, rolling across the rooftops."},
+      {"prompt": "Rooftops and streets of the sand-colored city still and quiet in rose-gold dusk light, people pausing where they stand, faces turning warm and calm. Cinematic, shallow depth of field. Sound: the call to prayer continuing, wind settling, a deep communal hush."},
+      {"prompt": "Close on a hand lifting a single plump date from the brass plate in warm golden lantern light; lips murmur softly before the first bite. Cinematic, shallow depth of field. Sound: a whispered word of thanks, the quiet first bite, family exhaling around the table."},
+      {"prompt": "A man drinks a full glass of water with his eyes closed, throat moving, then lowers the glass and opens his eyes with pure quiet relief; the family around him does the same. Warm golden lantern light, cinematic, shallow depth of field. Sound: long grateful swallows, glasses set down, soft happy sighs."},
+      {"prompt": "The family smiles at one another around the lantern-lit table and begins to serve the soup, steam rising into the warm light. The camera circles slowly. Cinematic, shallow depth of field. Sound: ladle and bowls, warm voices overlapping, the first spoonfuls."}
+    ]},
+
+    {"shots": [
+      {"prompt": "The long family table in full joyful motion under warm golden lantern light: dishes passed hand to hand, bread broken and shared, glasses refilled. The camera glides along the table. Cinematic, shallow depth of field. Sound: lively family conversation, laughter, cutlery and dishes in happy rhythm."},
+      {"prompt": "A grandmother laughs so warmly her shoulders shake as a small child sneaks a second sweet from a tray and grins with crumbs on his chin. Warm golden lantern light, cinematic, shallow depth of field. Sound: rich warm laughter, a child's giggle, the table joining in."},
+      {"prompt": "Amber tea pours in a high thin stream from a brass pot into small glasses on a tray, steam curling in the lantern light; hands pass the glasses around the table. Cinematic, shallow depth of field. Sound: tea pouring musically, glasses chiming softly, contented voices."},
+      {"prompt": "The family leans back around the emptied table in warm golden lantern light, tea in hand, faces soft and satisfied; through the window the sand-colored city glitters into night. Cinematic, shallow depth of field. Sound: quiet contented conversation, a last laugh, the city calm outside."}
+    ]},
+
+    {"shots": [
+      {"prompt": "Under a thin crescent moon families walk together through lantern-lit streets of the sand-colored city toward the domed mosque, its minaret glowing warm against the deep blue night. Cinematic, shallow depth of field. Sound: many soft footsteps, warm greetings, night insects singing."},
+      {"prompt": "The mosque courtyard fills with people in the warm light of hanging lanterns, rows of shoes gathering neatly by the arched doorway. The camera drifts across the courtyard. Cinematic, shallow depth of field. Sound: quiet greetings, shoes set down, a gathering hush."},
+      {"prompt": "Inside the mosque long rows of worshippers stand shoulder to shoulder under glowing lanterns and patterned arches, still and attentive. Reverent, cinematic, shallow depth of field. Sound: beautiful melodic recitation filling the hall, deep collective stillness."},
+      {"prompt": "The rows of worshippers bow together in one smooth unison motion under the lantern light, a single wave through the hall. Reverent, cinematic, shallow depth of field. Sound: the recitation continuing, fabric rustling in unison, profound quiet between verses."},
+      {"prompt": "Outside, the domed mosque glows from within under the crescent moon, lantern light spilling from its arched windows across the courtyard of the sand-colored city. The camera pulls back slowly and rises. Cinematic, shallow depth of field. Sound: recitation drifting faint and warm through the walls, night wind, insects."},
+      {"prompt": "A last slow aerial drift over the sleeping sand-colored city at night: warm windows going dark one by one, the crescent moon above the mosque's silhouette, deep blue peace. Cinematic, shallow depth of field. Sound: the softest night wind, a final distant note of recitation fading, stillness."}
+    ]}
+  ]
+}

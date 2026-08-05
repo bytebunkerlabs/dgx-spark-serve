@@ -1,0 +1,15 @@
+{
+  "name": "rack-party",
+  "engines": ["http://127.0.0.1:8091", "http://127.0.0.1:8092"],
+  "defaults": {"width": 672, "height": 384, "steps": 30, "seed": 42, "duration": 5.0},
+  "scenes": [
+    {"shots": [
+      {"use": "/tmp/robot-dj.mp4"},
+      {"prompt": "The tiny robot DJ leans into the miniature turntable, nodding its screen-face to the beat as the hard-drive disco ball spins overhead, flecks of light sweeping across the server rack. Dim basement lab, low angle, teal and amber lighting, shallow depth of field. Sound: the upbeat lo-fi electronic groove continues with vinyl scratches over the low hum of server fans."}
+    ]},
+    {"shots": [
+      {"prompt": "A small yellow forklift robot with round headlight eyes dances in a narrow server-room aisle, rocking side to side on its wheels and pumping its tiny forks like arms. Blue and green rack LEDs blink around it, a disco ball's flecks of light sweep the floor. Dim basement lab, teal and amber lighting, shallow depth of field, low angle. Sound: the same upbeat lo-fi electronic groove heard slightly muffled, as if from the next aisle, with server-fan hum."},
+      {"prompt": "The small yellow forklift robot spins in place in the server aisle and takes a bow toward the camera, headlight eyes blinking happily as confetti flecks of light drift across the racks. Dim basement lab, teal and amber lighting, shallow depth of field. Sound: the lo-fi groove resolves warmly with a soft chime and the steady hum of server fans."}
+    ]}
+  ]
+}
