@@ -180,13 +180,13 @@ def main():
     open(concat, "w").write(
         "".join(f"file '{os.path.basename(c)}'\n" for c in clips))
     final = os.path.join(workdir, "final.mp4")
-    try:  # identical codec params from one engine — stream copy usually works
-        ffmpeg(workdir, "-f", "concat", "-safe", "0", "-i", "concat.txt",
-               "-c", "copy", "final.mp4")
-    except subprocess.CalledProcessError:
-        print("stream-copy concat refused; re-encoding")
-        ffmpeg(workdir, "-f", "concat", "-safe", "0", "-i", "concat.txt",
-               "-c:v", "libx264", "-crf", "18", "-c:a", "aac", "final.mp4")
+    # Always re-encode the stitch. Stream-copy concat across clips from
+    # different engine sessions exits 0 and produces a file that freezes at
+    # every segment boundary while the audio plays on (measured on the
+    # pilot) — a broken file with a success code is worse than a slow one.
+    ffmpeg(workdir, "-f", "concat", "-safe", "0", "-i", "concat.txt",
+           "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "final.mp4")
     print(f"final: {final}")
 
 
