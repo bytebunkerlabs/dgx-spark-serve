@@ -263,8 +263,14 @@ cmd_logs() {
     have_worker || die "worker unreachable"
     ssh ${follow:+-t} "$WORKER_SSH" "docker logs $follow --tail 60 serve_node"
   else
-    if [ -n "$follow" ]; then tail -f /tmp/*-launch.log 2>/dev/null || docker logs -f --tail 60 serve_node
-    else docker logs --tail 60 serve_node 2>/dev/null || tail -60 /tmp/*-launch.log 2>/dev/null || dim "  no logs yet"
+    if [ -n "$follow" ]; then
+      tail -f /tmp/*-launch.log 2>/dev/null \
+        || docker logs -f --tail 60 serve_node 2>/dev/null \
+        || docker logs -f --tail 60 serve_solo
+    else
+      docker logs --tail 60 serve_node 2>/dev/null \
+        || docker logs --tail 60 serve_solo 2>/dev/null \
+        || tail -60 /tmp/*-launch.log 2>/dev/null || dim "  no logs yet"
     fi
   fi
 }
