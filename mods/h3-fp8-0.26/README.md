@@ -21,8 +21,9 @@ The stock 30 s inter-output timeout assumes datacenter step times. A GB10
 runs large shapes at 38+ s/step with a minutes-long VAE tail — the client
 gave up on a render whose denoise had COMPLETED, and the resulting abort
 crashed vllm-omni's DiffusionResultPump thread (InvalidStateError: CANCELLED,
-reproduced twice), leaving a zombie engine. Until upstream makes the timeout
-configurable and survives aborts, both problems are dodged here.
+reproduced twice), leaving a zombie engine. Both reported upstream as
+vllm-project/vllm-omni#5793 — when that lands in a release, this file goes
+too. Until then both problems are dodged here.
 
 Verified before vendoring: the PR adds no new imports, and git history shows
 no other post-release commit touches either file — the release tag IS the
