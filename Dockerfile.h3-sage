@@ -1,0 +1,14 @@
+# vllm-omni + SageAttention, for the H3 attention-backend experiment.
+# SageAttention is INT8-quantized attention ("lossy but typically visually
+# indistinguishable" per vllm-omni's own backend docs) with Triton kernels —
+# Triton compiles for sm_121, which is why this is the likeliest fast-attention
+# candidate on GB10 after FA4 and TRTLLM both ruled themselves out
+# (datacenter-Blackwell only).
+#
+#   docker build -f Dockerfile.h3-sage -t dgx-h3-sage:v0.26.0 .
+#
+# Pip at build time is the one sanctioned internet moment — the running
+# container inherits the launch scripts' offline flags like every engine.
+FROM vllm/vllm-omni:v0.26.0
+RUN pip install --no-cache-dir sageattention || \
+    pip install --no-cache-dir "sageattention<2"
