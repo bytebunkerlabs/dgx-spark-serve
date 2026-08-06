@@ -17,6 +17,14 @@ The shots file:
       ]
     }
 
+A scene may open FROM a photograph instead of an invented first frame:
+
+    {"image": "assets/mosque.jpg", "shots": [{"prompt": "..."}, ...]}
+
+The image is the scene's first frame (same fl2va path the chain uses), so
+it also fixes the scene's aspect and resolution — crop it to the shape you
+want. A shot can carry its own "image" to re-anchor mid-chain.
+
 A shot with "use" is an existing clip (no render) — the chain's opener.
 A shot with "prompt" renders via the engine: the FIRST shot in the file
 with no predecessor goes text-to-video; every later shot goes
@@ -158,19 +166,35 @@ def render(engine, params, ref_frame, out_path):
             die(f"job {jid} ended '{st}': {j.get('error')} — "
                 "the engine likely needs a restart before retrying (#5793)")
         if time.time() - t0 > SHOT_TIMEOUT_S:
-            die(f"job {jid} exceeded {SHOT_TIMEOUT_S}s")
+            die(f"job {jid} on {engine} exceeded {SHOT_TIMEOUT_S}s. Engines "
+                "degrade across a long run (unified memory fragments: shots "
+                "measured at 500 s, then 3000 s on the same engine). Restart "
+                "BOTH engines, then re-run this same command — finished shots "
+                "are kept.")
     open(out_path, "wb").write(
         api_retry(engine, f"/v1/videos/{jid}/content", raw=True))
 
 
-def run_scene(scene_idx, shots, dflt, engine, workdir):
+def run_scene(scene_idx, shots, dflt, engine, workdir, seed_image=None):
     """Render one scene's chain, sequentially, on one engine. A chain cannot
     parallelize — shot N+1 starts on shot N's last frame — so the unit of
-    parallelism is the scene, and scene boundaries are deliberate hard cuts."""
+    parallelism is the scene, and scene boundaries are deliberate hard cuts.
+
+    seed_image (scene-level "image" key, or a shot's own "image"): the scene
+    opens FROM that picture instead of inventing its own first frame. Same
+    fl2va path the chain already uses — a real photograph is just a frame the
+    engine did not render. It sets the scene's aspect/resolution too, so give
+    it the shape you want (fl2va ignores width/height)."""
     tag = f"scene{scene_idx:02d}"
     clips = []
-    prev_frame = None
+    prev_frame = seed_image
+    if seed_image and not os.path.exists(seed_image):
+        die(f"{tag}: seed image not found: {seed_image}")
     for j, shot in enumerate(shots, 1):
+        if shot.get("image"):  # a mid-chain re-anchor, e.g. a new subject
+            if not os.path.exists(shot["image"]):
+                die(f"{tag} shot {j}: image not found: {shot['image']}")
+            prev_frame = shot["image"]
         clip = os.path.join(workdir, f"{tag}-shot{j:02d}.mp4")
         if "use" in shot:
             if not os.path.exists(clip):
@@ -217,7 +241,8 @@ def main():
     def worker(idx, scene):
         engine = pool.get()
         try:
-            return run_scene(idx, scene["shots"], dflt, engine, workdir)
+            return run_scene(idx, scene["shots"], dflt, engine, workdir,
+                             seed_image=scene.get("image"))
         finally:
             pool.put(engine)
 
