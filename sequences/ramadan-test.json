@@ -1,0 +1,15 @@
+{
+  "name": "ramadan-test",
+  "engines": ["http://127.0.0.1:8091", "http://192.168.100.2:8091"],
+  "defaults": {"width": 672, "height": 384, "steps": 30, "seed": 42, "duration": 5.0},
+  "scenes": [
+    {"shots": [
+      {"prompt": "The sun touches the horizon directly behind the domed mosque and slender minaret of a sand-colored city, the sky burning orange and rose. The camera holds wide as the light slips lower. Cinematic, shallow depth of field. Sound: the evening call to prayer beginning, melodic and clear, rolling across the rooftops."},
+      {"prompt": "Close on a hand lifting a single plump date from a brass plate in warm golden lantern light; lips murmur softly before the first bite. Cinematic, shallow depth of field. Sound: a whispered word of thanks, the quiet first bite, family exhaling around the table."}
+    ]},
+    {"shots": [
+      {"prompt": "Under a thin crescent moon families walk together through lantern-lit streets of a sand-colored city toward a domed mosque, its minaret glowing warm against the deep blue night. Cinematic, shallow depth of field. Sound: many soft footsteps, warm greetings, night insects singing."},
+      {"prompt": "Inside the mosque long rows of worshippers stand shoulder to shoulder under glowing lanterns and patterned arches, still and attentive. Reverent, cinematic, shallow depth of field. Sound: beautiful melodic recitation filling the hall, deep collective stillness."}
+    ]}
+  ]
+}
