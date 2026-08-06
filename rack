@@ -116,6 +116,12 @@ cmd_pull() {
   bold "downloading $id"
   docker run --rm -v "$HF_CACHE:/root/.cache/huggingface" --entrypoint bash "$IMAGE" \
     -c "hf download '$id'"
+  # The container downloads as root; anything it creates 600 (hub metadata
+  # like trees/*.json) is unreadable to the host user and kills the rsync
+  # replication mid-flight (measured: exit 23, and set -e then skips shard
+  # verification — the worst part). Hand the tree back before syncing.
+  docker run --rm -v "$HF_CACHE:/cache" --entrypoint chown "$IMAGE" \
+    -R "$(id -u):$(id -g)" "/cache/hub/models--${id//\//--}"
   if have_worker; then
     bold "replicating to $WORKER_SSH over the fabric"
     "$ROOT/scripts/sync-model.sh" "$id"
