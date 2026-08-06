@@ -47,8 +47,10 @@ for f in /tmp/*.log; do
   [ "$DEL" = 1 ] && rm -f "$f" && say "            deleted"
 done
 
-# 4. loose media anywhere in the home dir (people save clips outside the repo)
-mapfile -t loose < <(find "$HOME" -maxdepth 6 \( -name "*.mp4" -o -name "*-last.jpg" \) \
+# 4. loose media outside the repo — the home dir AND /tmp, which is where
+# clips really pile up (downloads, poster frames, benchmark output).
+mapfile -t loose < <(find "$HOME" /tmp -maxdepth 6 \
+  \( -name "*.mp4" -o -name "*-last.jpg" -o -name "*-poster.jpg" \) \
   -not -path "*/dgx-spark-serve/sequences/*" 2>/dev/null)
 if [ ${#loose[@]} -gt 0 ]; then
   say "loose media ${#loose[@]} file(s) outside the repo:"
