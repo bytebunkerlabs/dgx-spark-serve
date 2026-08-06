@@ -73,6 +73,13 @@ import uuid
 FFMPEG_IMAGE = "vllm/vllm-omni:v0.26.0"
 POLL_S = 15
 SHOT_TIMEOUT_S = 3600
+# An engine degrades across a long session — measured 500 s per shot early,
+# 3000 s later, as unified memory fragments. Stop while the numbers still
+# make sense rather than grinding for hours: the run resumes after a restart
+# and keeps every finished shot. Baselines are per engine (they warm up at
+# different times), and the first shot on each is ignored — it pays compile.
+SLOW_FACTOR = 2.5
+_BASELINE = {}          # engine -> fastest full-shot time seen
 
 
 def die(msg):
@@ -160,7 +167,16 @@ def render(engine, params, ref_frame, out_path):
         j = api_retry(engine, f"/v1/videos/{jid}")
         st = j.get("status")
         if st == "completed":
-            print(f"  completed in {j.get('inference_time_s', 0):.0f}s", flush=True)
+            took = j.get("inference_time_s") or 0
+            base = _BASELINE.get(engine)
+            if base and took > base * SLOW_FACTOR:
+                print(f"  completed in {took:.0f}s — {took / base:.1f}x this "
+                      f"engine's best ({base:.0f}s)", flush=True)
+                die(f"{engine} has degraded past {SLOW_FACTOR}x. Restart BOTH "
+                    "engines, then re-run this same command — finished shots "
+                    "are kept and it picks up where it stopped.")
+            _BASELINE[engine] = min(base, took) if base else took
+            print(f"  completed in {took:.0f}s", flush=True)
             break
         if st not in ("queued", "in_progress"):
             die(f"job {jid} ended '{st}': {j.get('error')} — "
