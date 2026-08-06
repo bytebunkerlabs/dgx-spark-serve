@@ -1,14 +1,19 @@
-# vllm-omni + SageAttention, for the H3 attention-backend experiment.
-# SageAttention is INT8-quantized attention ("lossy but typically visually
-# indistinguishable" per vllm-omni's own backend docs) with Triton kernels —
-# Triton compiles for sm_121, which is why this is the likeliest fast-attention
-# candidate on GB10 after FA4 and TRTLLM both ruled themselves out
-# (datacenter-Blackwell only).
+# vllm-omni + SageAttention 2.x, for the H3 attention-backend experiment.
+#
+# The catch that shaped this file: PyPI's `sageattention` stops at 1.0.6,
+# which lacks the sageattn() API vllm-omni's SAGE_ATTN backend imports —
+# the 2.x line is GitHub-source-only. The image carries CUDA 13 + nvcc, and
+# CUDA 13 knows sm_121 natively, so we build for GB10 directly and fall
+# back to 12.0+PTX (runtime JIT) if the setup's arch list refuses 12.1.
 #
 #   docker build -f Dockerfile.h3-sage -t dgx-h3-sage:v0.26.0 .
 #
-# Pip at build time is the one sanctioned internet moment — the running
-# container inherits the launch scripts' offline flags like every engine.
+# Build-time internet is the one sanctioned door; the running container
+# inherits the launch scripts' offline flags like every engine.
 FROM vllm/vllm-omni:v0.26.0
-RUN pip install --no-cache-dir sageattention || \
-    pip install --no-cache-dir "sageattention<2"
+RUN pip uninstall -y sageattention 2>/dev/null; \
+    git clone --depth 1 https://github.com/thu-ml/SageAttention.git /opt/sageattention
+RUN cd /opt/sageattention && \
+    ( TORCH_CUDA_ARCH_LIST="12.1" MAX_JOBS=16 pip install --no-cache-dir --no-build-isolation . \
+      || TORCH_CUDA_ARCH_LIST="12.0+PTX" MAX_JOBS=16 pip install --no-cache-dir --no-build-isolation . )
+RUN python3 -c "from sageattention import sageattn; print('sageattn OK')"
