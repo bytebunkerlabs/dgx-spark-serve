@@ -1,19 +1,25 @@
 # vllm-omni + SageAttention 2.x, for the H3 attention-backend experiment.
 #
-# The catch that shaped this file: PyPI's `sageattention` stops at 1.0.6,
-# which lacks the sageattn() API vllm-omni's SAGE_ATTN backend imports —
-# the 2.x line is GitHub-source-only. The image carries CUDA 13 + nvcc, and
-# CUDA 13 knows sm_121 natively, so we build for GB10 directly and fall
-# back to 12.0+PTX (runtime JIT) if the setup's arch list refuses 12.1.
+# Three traps shaped this file:
+#   1. PyPI's `sageattention` stops at 1.0.6, which lacks the sageattn() API
+#      vllm-omni's SAGE_ATTN backend imports — 2.x is GitHub-source-only.
+#   2. The vllm-omni image ships CUDA 13's runtime but not its dev headers;
+#      the nvcc compile dies on cusparse.h. The officially matching devel
+#      image donates its include dir via multi-stage COPY.
+#   3. No arch coaxing needed: SageAttention's setup detects GB10 and emits
+#      -gencode arch=compute_121a,code=sm_121a natively. CUDA 13 knows sm_121.
 #
 #   docker build -f Dockerfile.h3-sage -t dgx-h3-sage:v0.26.0 .
 #
-# Build-time internet is the one sanctioned door; the running container
-# inherits the launch scripts' offline flags like every engine.
+# The import check is part of the build — a dud cannot tag. Build-time
+# internet is the one sanctioned door; the running container inherits the
+# launch scripts' offline flags like every engine.
+FROM nvidia/cuda:13.0.1-devel-ubuntu24.04 AS cuda-dev
+
 FROM vllm/vllm-omni:v0.26.0
+COPY --from=cuda-dev /usr/local/cuda/include /usr/local/cuda/include
 RUN pip uninstall -y sageattention 2>/dev/null; \
     git clone --depth 1 https://github.com/thu-ml/SageAttention.git /opt/sageattention
 RUN cd /opt/sageattention && \
-    ( TORCH_CUDA_ARCH_LIST="12.1" MAX_JOBS=16 pip install --no-cache-dir --no-build-isolation . \
-      || TORCH_CUDA_ARCH_LIST="12.0+PTX" MAX_JOBS=16 pip install --no-cache-dir --no-build-isolation . )
+    TORCH_CUDA_ARCH_LIST="12.1" MAX_JOBS=16 pip install --no-cache-dir --no-build-isolation .
 RUN python3 -c "from sageattention import sageattn; print('sageattn OK')"
