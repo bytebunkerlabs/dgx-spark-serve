@@ -22,7 +22,7 @@ FABRIC_IF=${FABRIC_IF:-enp1s0f0np0}
 IB_HCAS=${IB_HCAS:-rocep1s0f0,roceP2p1s0f0}
 HF_CACHE=${HF_CACHE:-$HOME/dgx/hf}
 IMAGE=${IMAGE:-dgx-spark-serve:dev}
-API_PORT=${API_PORT:-8000}
+API_PORT=${API_PORT:-8888}
 MASTER_PORT=${MASTER_PORT:-29501}
 CTR=serve_node
 
