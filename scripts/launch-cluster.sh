@@ -34,6 +34,7 @@ DEBUG=${2:-}
 # Recipes are bash: they define MODEL, SERVE_ARGS (array), ENV_EXTRA (array of
 # KEY=VAL), MODS (array of dirs). Arrays survive quoting — JSON flags included.
 SERVE_ARGS=() ENV_EXTRA=() MODS=()
+RECIPE_DIR=${RECIPE_DIR:-$(dirname "$RECIPE")}   # a v2 variant reads "$RECIPE_DIR/model.env"
 . "$RECIPE"
 : "${MODEL:?recipe must set MODEL}"
 

@@ -11,6 +11,7 @@ API_PORT=${API_PORT:-8888}
 
 RECIPE=${1:?usage: launch-solo.sh recipes/<model>.env}
 SERVE_ARGS=() ENV_EXTRA=() MODS=()
+RECIPE_DIR=${RECIPE_DIR:-$(dirname "$RECIPE")}   # a v2 variant reads "$RECIPE_DIR/model.env"
 . "$RECIPE"
 : "${MODEL:?recipe must set MODEL}"
 

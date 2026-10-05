@@ -4,9 +4,13 @@
 #   rack init                  detect this machine, import .env, write the inventory
 #   rack nodes add|ls|rm|test  the machines in this rack
 #   rack fit  <hf-id>          will it fit? (asks HuggingFace, does the arithmetic)
-#   rack pull <hf-id>          download + replicate to the worker + verify
+#   rack pull <recipe|hf-id>   download + replicate to the workers + verify
 #   rack new  <name> <hf-id>   scaffold a recipe you can edit
 #   rack up   <recipe>         launch (solo or TP=2, from the recipe)
+#
+# pull, up, fit, recipes and new take a platform flag (--dgx, --linux,
+# --windows, --mac; default: this machine's) and --plan; any command but init
+# and nodes takes --on <node> to run it on another machine of the inventory.
 #   rack down                  stop everything
 #   rack status                what's running, on both nodes
 #   rack logs [-f]             head and worker logs
@@ -26,6 +30,8 @@ cd "$ROOT"
 . "$ROOT/lib/platform.sh"
 . "$ROOT/lib/inventory.sh"
 . "$ROOT/lib/nodes.sh"
+. "$ROOT/lib/flags.sh"
+. "$ROOT/lib/recipe.sh"
 RACK_ROOT=$ROOT
 load_site_env
 HF_CACHE=${HF_CACHE:-$HOME/dgx/hf}
@@ -72,16 +78,17 @@ usage() {
 rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
 
   rack init [--name <n>]      detect this machine, import .env, write the inventory
+  rack version [--json]       this rack's version and schemas
   rack platform [--json]      what this machine is: dgx, linux, windows (WSL2) or mac
   rack nodes [ls] [--json]    the machines in this rack
   rack nodes add <name> [--ssh <target>] [--fabric <ip>] [--role worker|node] ...
   rack nodes rm <name>        forget a machine (touches nothing on it)
   rack nodes test [<name>...] [--json]   ssh, platform, rack installed, fabric
   rack fit <hf-id>            will it fit? asks HuggingFace, does the arithmetic
-  rack pull <hf-id>           download, replicate to the workers, verify shards
+  rack pull <recipe|hf-id>    download, replicate to the workers, verify shards
   rack models                 what's on disk, and where
   rack new <name> <hf-id>     scaffold recipes/<name>.env
-  rack recipes                list recipes
+  rack recipes                list recipes, and the platforms each serves on
 
   rack build [community|ngc|upstream]   build the image and ship it to the workers
   rack preflight              read-only health check, every node
@@ -96,9 +103,28 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack monitor up|down|status|token|logs
                               telemetry for every node behind one endpoint (docs/11-monitor.md)
 
+  --dgx --linux --windows --mac   pull, up, fit, recipes, new: that platform's variant
+                              (default: this machine's; another is refused with the fix)
+  --plan                      pull, up: print what would run, run nothing (any machine)
+  --on <node>                 any command but init and nodes: run it on that node
+
 Recipes live in recipes/. The inventory is ~/.config/dgx-serve/nodes (rack init);
 site settings are ~/.config/dgx-serve/rack.env, or .env here. Everything is idempotent.
 EOF
+}
+
+# ------------------------------------------------------------ version ------
+# What this rack is, for people and for the app's compatibility check (and for
+# --on, which refuses to forward to a rack that cannot answer this).
+cmd_version() {
+  local commit
+  commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
+  if [ "${1:-}" = --json ]; then
+    printf '{"schema":%s,"version":%s,"commit":%s,"json_schema":%s,"recipe_schema":%s,"platforms":["dgx","linux","windows","mac"]}\n' \
+      "$RACK_JSON_SCHEMA" "$(json_str "$RACK_VERSION")" "$(json_str "$commit")" "$RACK_JSON_SCHEMA" "$RACK_RECIPE_SCHEMA"
+    return
+  fi
+  printf 'rack %s%s (recipes v%s, json v%s)\n' "$RACK_VERSION" "${commit:+ $commit}" "$RACK_RECIPE_SCHEMA" "$RACK_JSON_SCHEMA"
 }
 
 # ----------------------------------------------------------- platform ------
@@ -127,7 +153,11 @@ cmd_platform() {
 
 # ---------------------------------------------------------------- fit ------
 cmd_fit() {
-  local id=${1:?usage: rack fit <org/model>}
+  flags_parse "$@"
+  set -- ${REST[@]+"${REST[@]}"}
+  [ $# -gt 0 ] || die "usage: rack fit <recipe|org/model> [--dgx|--linux|--windows|--mac]"
+  flags_target fit
+  local id; id=$(model_ref "$1")
   bold "$id"
   python3 - "$id" "${USABLE_GB:-110}" <<'PY'
 import json, sys, urllib.request
@@ -179,8 +209,41 @@ PY
 }
 
 # --------------------------------------------------------------- pull ------
+# A Hugging Face repo id from a command's argument: an org/name as given, or
+# the MODEL of a recipe's variant for the target platform.
+model_ref() {
+  local ref=$1 id
+  case "$ref" in
+    */*) printf '%s' "$ref"; return ;;
+  esac
+  recipe_resolve "$ref" "$TARGET_PLATFORM"
+  id=$(recipe_model "$RECIPE_FILE")
+  case "$id" in
+    /*|'(none declared)'|'(inheritance loop)'|'') die "$RECIPE_NAME's MODEL is not a Hugging Face repo ($id): nothing to fetch" ;;
+  esac
+  printf '%s' "$id"
+}
+
 cmd_pull() {
-  local id=${1:?usage: rack pull <org/model>}
+  flags_parse "$@"
+  set -- ${REST[@]+"${REST[@]}"}
+  [ $# -gt 0 ] || die "usage: rack pull <recipe|org/model> [--dgx|--linux|--windows|--mac] [--plan]"
+  flags_target pull
+  local id; id=$(model_ref "$1")
+  if [ "$PLAN" = 1 ]; then
+    if [ "$JSON" = 1 ]; then
+      printf '{"schema":%s,"command":"pull","platform":%s,"model":%s,"cache":%s,"replicate_to":%s}\n' "$RACK_JSON_SCHEMA" \
+        "$(json_str "$TARGET_PLATFORM")" "$(json_str "$id")" "$(json_str "$HF_CACHE")" "$(json_str "$WORKER_NAMES")"
+    else
+      bold "plan: rack pull $1 --$TARGET_PLATFORM (nothing was run)"
+      printf '  model      %s\n  into       %s\n' "$id" "$HF_CACHE"
+      [ -z "$WORKER_NAMES" ] || printf '  then       replicate to %s, verify shards on every node\n' "$WORKER_NAMES"
+    fi
+    return
+  fi
+  case "$TARGET_PLATFORM" in
+    windows|mac) die "downloading for $(platform_title "$TARGET_PLATFORM") needs rack's own downloader, which is not in this build yet" ;;
+  esac
   docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing — run: rack build"
   bold "downloading $id"
   docker run --rm -v "$HF_CACHE:/root/.cache/huggingface" --entrypoint bash "$IMAGE" \
@@ -257,24 +320,31 @@ recipe_model() {
   [ "$depth" -gt 4 ] && { printf '(inheritance loop)'; return; }
   m=$(grep -m1 '^MODEL=' "$f" | cut -d= -f2- || true)
   [ -n "$m" ] && { printf '%s' "$m"; return; }
+  # a v2 variant: what it shares is in its folder's model.env
+  [ "$(basename "$f")" != model.env ] && [ -f "$(dirname "$f")/model.env" ] \
+    && { recipe_model "$(dirname "$f")/model.env" $((depth + 1)); return; }
   parent=$(sed -n 's|^\. *\(recipes/[^ ]*\.env\).*|\1|p' "$f" | head -1)
   [ -n "$parent" ] && [ -e "$parent" ] && { recipe_model "$parent" $((depth + 1)); return; }
   printf '%s' '(none declared)'
 }
 
 cmd_recipes() {
-  bold "recipes"
-  local any=0 f
-  for f in recipes/*.env; do
-    [ -e "$f" ] || break
-    [ "$f" = "$TEMPLATE" ] && continue                 # the scaffold, not a recipe
+  flags_parse "$@"
+  local n plats f m tp any=0
+  bold "recipes${WANT_PLATFORM:+ for $(platform_title "$WANT_PLATFORM")}"
+  for n in $(recipe_names); do
+    plats=$(recipe_platforms "$n")
+    if [ -n "$WANT_PLATFORM" ]; then
+      case " $plats " in *" $WANT_PLATFORM "*) ;; *) continue ;; esac
+    fi
     any=1
-    local m tp="solo"
+    f=$(recipe_location "$n")
+    case "$f" in *.env) ;; *) f=$f/$(printf '%s' "$plats" | cut -d' ' -f1).env ;; esac
     m=$(recipe_model "$f")
-    is_tp2 "$f" && tp="TP=2"
-    printf '  %-34s %-8s %s\n' "$(basename "$f" .env)" "$tp" "$m"
+    tp="solo"; is_tp2 "$f" && tp="TP=2"
+    printf '  %-30s %-6s %-24s %s\n' "$n" "$tp" "$(printf '%s' "$plats" | tr ' ' ,)" "$m"
   done
-  [ $any = 1 ] || dim "  none yet — try: rack new <name> <org/model>"
+  [ $any = 1 ] || dim "  none yet — try: rack new <name> <org/model>${WANT_PLATFORM:+ --$WANT_PLATFORM}"
 }
 
 # ---------------------------------------------------------------- new ------
@@ -315,45 +385,57 @@ cmd_preflight() {
   done
 }
 
-resolve_recipe() { # exact name, then a path, then a unique prefix — `rack up inkling`
-  local r=$1                                  # should find inkling-small-nvfp4.env
-  [ "recipes/$r.env" = "$TEMPLATE" ] && die "$TEMPLATE is the scaffold, not a recipe: rack new <name> <org/model>"
-  [ -e "recipes/$r.env" ] && { printf 'recipes/%s.env' "$r"; return; }
-  [ -e "$r" ] && { printf '%s' "$r"; return; }
-  local g=(recipes/"$r"*.env) m=()
-  local c; for c in "${g[@]}"; do [ "$c" = "$TEMPLATE" ] || m+=("$c"); done
-  [ ${#m[@]} -gt 0 ] && [ -e "${m[0]}" ] || die "no such recipe: $r  (rack recipes)"
-  [ ${#m[@]} -eq 1 ] || die "ambiguous: $r matches ${m[*]//recipes\//}"
-  printf '%s' "${m[0]}"
-}
-
 cmd_up() {
-  local r=${1:?usage: rack up <recipe>}; shift || true
-  local f; f=$(resolve_recipe "$r")
+  flags_parse "$@"
+  set -- ${REST[@]+"${REST[@]}"}
+  [ $# -gt 0 ] || die "usage: rack up <recipe> [--dgx|--linux|--windows|--mac] [--plan] [--on <node>]"
+  local r=$1; shift
+  flags_target up
+  recipe_resolve "$r" "$TARGET_PLATFORM"
+  local f=$RECIPE_FILE how
+  how=$(up_topology "$f")
+  if [ "$PLAN" = 1 ]; then up_plan "$f" "$how"; return; fi
+  case "$TARGET_PLATFORM" in
+    windows|mac) die "serving on $(platform_title "$TARGET_PLATFORM") needs the native launcher, which is not in this build yet" ;;
+  esac
   # A scaffolded recipe that was never finished would otherwise reach the engine
   # as a bare `--max-model-len --max-num-seqs` and fail somewhere less obvious.
   grep -q 'FILL_ME' "$f" && die "$f still has FILL_ME placeholders — answer question 4 (docs/05-recipe-method.md)"
-  # TOPOLOGY (.env) is a SITE fact, not a model fact: on the two-Spark rack,
-  # tensor parallelism means two machines (auto); on a rented multi-GPU box it
-  # means N GPUs in ONE machine — TOPOLOGY=solo sends every recipe, TP
-  # included, through launch-solo so the fabric machinery never engages.
+  if [ "$how" = cluster ]; then
+    bold "launching $f across $HEAD_LABEL and $WORKER_NAMES"
+    RECIPE_DIR=$RECIPE_DIR "$ROOT/scripts/launch-cluster.sh" "$f" "$@"
+  else
+    bold "launching $f on this node${TOPOLOGY:+ (TOPOLOGY=$TOPOLOGY)}"
+    RECIPE_DIR=$RECIPE_DIR "$ROOT/scripts/launch-solo.sh" "$f" "$@"
+  fi
+}
+
+# TOPOLOGY (.env) is a SITE fact, not a model fact: on the two-Spark rack,
+# tensor parallelism means two machines (auto); on a rented multi-GPU box it
+# means N GPUs in ONE machine — TOPOLOGY=solo sends every recipe, TP
+# included, through launch-solo so the fabric machinery never engages.
+up_topology() {
   case "${TOPOLOGY:-auto}" in
-    solo)
-      bold "launching $f on this node (TOPOLOGY=solo)"
-      "$ROOT/scripts/launch-solo.sh" "$f" "$@" ;;
-    cluster)
-      bold "launching $f across both nodes (TOPOLOGY=cluster)"
-      "$ROOT/scripts/launch-cluster.sh" "$f" "$@" ;;
-    auto)
-      if is_tp2 "$f"; then
-        bold "launching $f across both nodes"
-        "$ROOT/scripts/launch-cluster.sh" "$f" "$@"
-      else
-        bold "launching $f on this node"
-        "$ROOT/scripts/launch-solo.sh" "$f" "$@"
-      fi ;;
+    solo) printf solo ;;
+    cluster) printf cluster ;;
+    auto) if is_tp2 "$1"; then printf cluster; else printf solo; fi ;;
     *) die "TOPOLOGY must be auto, solo, or cluster (got: $TOPOLOGY)" ;;
   esac
+}
+
+# What rack up would do, without doing it. Works on any machine.
+up_plan() {
+  local f=$1 how=$2 where
+  if [ "$how" = cluster ]; then where="$HEAD_LABEL + $WORKER_NAMES"; else where=$(local_label); fi
+  [ "$TARGET_PLATFORM" = "$(this_platform)" ] || where="$(platform_title "$TARGET_PLATFORM")"
+  if [ "$JSON" = 1 ]; then
+    printf '{"schema":%s,"command":"up","recipe":%s,"platform":%s,"variant":%s,"model":%s,"topology":%s,"where":%s}\n' \
+      "$RACK_JSON_SCHEMA" "$(json_str "$RECIPE_NAME")" "$(json_str "$TARGET_PLATFORM")" "$(json_str "$f")" \
+      "$(json_str "$(recipe_model "$f")")" "$(json_str "$how")" "$(json_str "$where")"
+    return
+  fi
+  bold "plan: rack up $RECIPE_NAME --$TARGET_PLATFORM (nothing was run)"
+  printf '  variant    %s\n  model      %s\n  topology   %s\n  where      %s\n' "$f" "$(recipe_model "$f")" "$how" "$where"
 }
 
 cmd_down() { "$ROOT/scripts/stop-cluster.sh"; }
@@ -520,8 +602,37 @@ cmd_install() {
   esac
 }
 
+# --on <node>: the same command on that machine of the inventory, over ssh.
+# Taken out before any command parses its arguments.
+ON_NODE="" ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --on) [ -n "${2:-}" ] || die "--on needs a node name  (rack nodes)"; ON_NODE=$2; shift 2 ;;
+    --on=*) ON_NODE=${1#--on=}; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+if [ -n "$ON_NODE" ]; then
+  case "${1:-}" in
+    init|nodes|install|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
+  esac
+  inv_has "$ON_NODE" || die "no such node: $ON_NODE  (rack nodes)"
+  on_plat=$(inv_get "$ON_NODE" NODE_PLATFORM) on_plan=0
+  for a in "$@"; do [ "$a" = --plan ] && on_plan=1; done
+  for a in "$@"; do
+    case "$a" in
+      --dgx|--linux|--windows|--mac)
+        [ "$on_plan" = 1 ] || [ -z "$on_plat" ] || [ "${a#--}" = "$on_plat" ] \
+          || die "$ON_NODE is $(platform_title "$on_plat"); $a needs $(platform_title "${a#--}")" ;;
+    esac
+  done
+  run_on_node "$ON_NODE" "$@" || true        # returns only when the node is this machine
+fi
+
 case "${1:-}" in
   platform)  shift; cmd_platform "$@" ;;
+  version|--version) shift; cmd_version "$@" ;;
   init)      shift; cmd_init "$@" ;;
   nodes)     shift; cmd_nodes "$@" ;;
   fit)       shift; cmd_fit "$@" ;;
