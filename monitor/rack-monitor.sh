@@ -31,6 +31,7 @@ WORKER_SSH=${WORKER_SSH-spark-2}             # empty: a single-node site
 MONITOR_PORT=${MONITOR_PORT:-9177}
 MONITOR_CLUSTER=${MONITOR_CLUSTER:-rack}
 MONITOR_ENGINE_PORTS=${MONITOR_ENGINE_PORTS:-}
+MONITOR_BIND=${MONITOR_BIND:-0.0.0.0}        # the head's listen addresses; the worker binds its fabric IP
 TOKEN_FILE=$HOME/.config/rack/monitor.token  # same path on every node
 STATE_DIR=$HOME/.local/state/rack-monitor
 TAG=$(cat "$HERE/rackmon.py" "$HERE/Dockerfile" | sha256sum | cut -c1-12)
@@ -79,7 +80,7 @@ ship_worker() {
 node_script() {
   cat <<'SH'
 set -euo pipefail
-image=$1 name=$2 role=$3 peers=$4 port=$5 cluster=$6 engine_ports=$7
+image=$1 name=$2 role=$3 peers=$4 port=$5 cluster=$6 engine_ports=$7 bind=$8
 tok=$HOME/.config/rack/monitor.token
 state=$HOME/.local/state/rack-monitor
 [ -s "$tok" ] || { echo "no token at $tok" >&2; exit 1; }
@@ -106,7 +107,7 @@ docker run -d --name rack-monitor --restart unless-stopped \
   --user "$uid:$gid" --memory 256m --pids-limit 64 \
   -e NVIDIA_DRIVER_CAPABILITIES=utility \
   -e "MONITOR_NAME=$name" -e "MONITOR_ROLE=$role" -e "MONITOR_PEERS=$peers" \
-  -e "MONITOR_PORT=$port" -e "MONITOR_CLUSTER=$cluster" "${extra[@]}" \
+  -e "MONITOR_PORT=$port" -e "MONITOR_BIND=$bind" -e "MONITOR_CLUSTER=$cluster" "${extra[@]}" \
   -v "$tok":/run/secrets/rack-monitor-token:ro \
   -v "$state":/run/rackmon:ro \
   -v /etc/os-release:/run/host/os-release:ro \
@@ -123,9 +124,9 @@ echo "started${gpu:+ with the GPU}"
 SH
 }
 
-start_node() {   # start_node <local|ssh-target> <name> <role> <peers>
-  local where=$1 name=$2 role=$3 peers=$4 args
-  args=$(printf '%q ' "$IMAGE" "$name" "$role" "$peers" "$MONITOR_PORT" "$MONITOR_CLUSTER" "$MONITOR_ENGINE_PORTS")
+start_node() {   # start_node <local|ssh-target> <name> <role> <peers> <bind>
+  local where=$1 name=$2 role=$3 peers=$4 bind=$5 args
+  args=$(printf '%q ' "$IMAGE" "$name" "$role" "$peers" "$MONITOR_PORT" "$MONITOR_CLUSTER" "$MONITOR_ENGINE_PORTS" "$bind")
   if [ "$where" = local ]; then
     node_script | eval "bash -s -- $args"
   else
@@ -212,12 +213,13 @@ cmd_up() {
   if have_worker; then
     ship_worker
     peers="$WORKER_SSH=http://$WORKER_IP:$MONITOR_PORT"
-    printf 'monitor: %-10s ' "$WORKER_SSH"; start_node "$WORKER_SSH" "$WORKER_SSH" worker ""
+    # the worker answers only the head, over the fabric (and itself)
+    printf 'monitor: %-10s ' "$WORKER_SSH"; start_node "$WORKER_SSH" "$WORKER_SSH" worker "" "$WORKER_IP,127.0.0.1"
   elif [ -n "$WORKER_SSH" ]; then
     dim "monitor: $WORKER_SSH unreachable over ssh; the head will report it down until rack monitor up runs again"
     peers="$WORKER_SSH=http://$WORKER_IP:$MONITOR_PORT"
   fi
-  printf 'monitor: %-10s ' "$HEAD_LABEL"; start_node local "$HEAD_LABEL" head "$peers"
+  printf 'monitor: %-10s ' "$HEAD_LABEL"; start_node local "$HEAD_LABEL" head "$peers" "${MONITOR_BIND:-0.0.0.0}"
   prune_images
   local i
   for i in $(seq 1 15); do

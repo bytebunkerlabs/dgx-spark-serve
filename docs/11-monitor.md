@@ -100,12 +100,14 @@ it asks the worker.
 
 ## Reaching it
 
-The monitor binds `0.0.0.0:9177` on the host network. On this rack that means:
+The head's monitor binds `0.0.0.0:9177` on the host network (`MONITOR_BIND`
+to narrow it). The worker's binds only its fabric address and loopback: the head
+is the only thing that asks it. On this rack that means:
 
 | path | state | why |
 |---|---|---|
 | tailnet `http://100.90.164.11:9177`, `http://burhan.tailed338.ts.net:9177` | open | ufw allows `tailscale0` |
-| fabric `192.168.100.x:9177` | open | how the head reaches the worker |
+| fabric `192.168.100.x:9177` | open | how the head reaches the worker (the worker listens nowhere else) |
 | LAN `http://172.16.25.186:9177` | closed | ufw drops it. LiteLLM's :4000 is open on the LAN only because Docker-published ports bypass ufw; a host-network service does not |
 
 `rack monitor up` tests the LAN path from the worker and prints the exact rule
@@ -122,6 +124,7 @@ sudo ufw allow from 172.16.25.0/24 to any port 9177 proto tcp
 | variable | default | meaning |
 |---|---|---|
 | `MONITOR_PORT` | 9177 | port on every node |
+| `MONITOR_BIND` | 0.0.0.0 | the head's listen addresses, comma-separated |
 | `MONITOR_CLUSTER` | rack | the name the app shows |
 | `MONITOR_ENGINE_PORTS` | 8888,8000,8001,8002,8080,30000,11434,1234 | where engines may listen |
 | `WORKER_IP` | 192.168.100.2 | the worker's fabric address, which the head polls |
