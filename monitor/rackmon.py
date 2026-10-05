@@ -204,6 +204,11 @@ ENGINES = {
         "ttft": "vllm:time_to_first_token_seconds",
         "e2e": "vllm:e2e_request_latency_seconds",
         "itl": ("vllm:inter_token_latency_seconds", "vllm:time_per_output_token_seconds"),
+        # speculative decoding (MTP, EAGLE, n-gram): one decode step can emit
+        # several tokens, so the step latency above is not a per-token latency
+        "spec_drafts": ("vllm:spec_decode_num_drafts_total",),
+        "spec_draft_tokens": ("vllm:spec_decode_num_draft_tokens_total",),
+        "spec_accepted": ("vllm:spec_decode_num_accepted_tokens_total",),
     },
     "sglang": {
         "prefix": "sglang:",
@@ -289,6 +294,9 @@ def summarize_engine(kind, samples):
         "preemptions": first(spec.get("preempt", ())),
         "prefix_hits": first(spec.get("hits", ())),
         "prefix_queries": first(spec.get("queries", ())),
+        "spec_drafts": first(spec.get("spec_drafts", ())),
+        "spec_draft_tokens": first(spec.get("spec_draft_tokens", ())),
+        "spec_accepted": first(spec.get("spec_accepted", ())),
         "ttft": hist(spec.get("ttft")),
         "e2e": hist(spec.get("e2e")),
         "itl": itl,
@@ -466,7 +474,8 @@ class Engine:
     def window(self):
         """Rates over ~10 s, latencies and prefix hits over ~60 s."""
         out = {"gen_tps": None, "prompt_tps": None, "ttft_p50": None, "ttft_p95": None,
-               "e2e_avg": None, "itl_ms": None, "prefix_hit_pct": None}
+               "e2e_avg": None, "itl_ms": None, "prefix_hit_pct": None,
+               "tokens_per_step": None, "spec_accept_pct": None, "spec_window": None}
         old, cur = self._since(10)
         if old:
             dt = cur[0] - old[0]
@@ -490,6 +499,18 @@ class Engine:
             ha, hb = a.get("prefix_hits"), b.get("prefix_hits")
             if None not in (qa, qb, ha, hb) and qb > qa:
                 out["prefix_hit_pct"] = round(100.0 * (hb - ha) / (qb - qa), 1)
+        # tokens one decode step yields = 1 + accepted drafts per step; over
+        # the last minute when there was decoding, else since the engine started
+        if self.hist:
+            cur = self.hist[-1][1]
+            base = old[1] if old and (cur.get("spec_drafts") or 0) > (old[1].get("spec_drafts") or 0) else {}
+            drafts = (cur.get("spec_drafts") or 0) - (base.get("spec_drafts") or 0)
+            if drafts > 0:
+                acc = (cur.get("spec_accepted") or 0) - (base.get("spec_accepted") or 0)
+                proposed = (cur.get("spec_draft_tokens") or 0) - (base.get("spec_draft_tokens") or 0)
+                out["tokens_per_step"] = round(1 + acc / drafts, 2)
+                out["spec_accept_pct"] = round(100.0 * acc / proposed, 1) if proposed > 0 else None
+                out["spec_window"] = "minute" if base else "start"
         return out
 
     def snapshot(self):

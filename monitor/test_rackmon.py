@@ -68,6 +68,11 @@ vllm:e2e_request_latency_seconds_sum{engine="0",model_name="dsv4"} 420.0
 vllm:inter_token_latency_seconds_count{engine="0",model_name="dsv4"} 12000.0
 vllm:inter_token_latency_seconds_sum{engine="0",model_name="dsv4"} 444.0
 vllm:cache_config_info{block_size="16",cache_dtype="auto",num_gpu_blocks="20000",prefix_caching="True"} 1.0
+vllm:spec_decode_num_drafts_total{engine="0",model_name="dsv4"} 222.0
+vllm:spec_decode_num_drafts_created{engine="0",model_name="dsv4"} 1.7912212842995257e+09
+vllm:spec_decode_num_draft_tokens_total{engine="0",model_name="dsv4"} 888.0
+vllm:spec_decode_num_accepted_tokens_total{engine="0",model_name="dsv4"} 340.0
+vllm:spec_decode_num_accepted_tokens_per_pos_total{engine="0",model_name="dsv4",position="0"} 149.0
 process_resident_memory_bytes 1.2e+09
 python_gc_objects_collected_total{generation="0"} NaN
 """
@@ -158,6 +163,13 @@ class Parsers(unittest.TestCase):
         self.assertEqual(w["prompt_tps"], 500.0)
         self.assertEqual(w["prefix_hit_pct"], 50.0)
         self.assertIsNotNone(w["ttft_p50"])
+        # speculative decoding: nothing drafted inside the window -> since start
+        self.assertEqual((w["tokens_per_step"], w["spec_accept_pct"], w["spec_window"]), (2.53, 38.3, "start"))
+        s2 = dict(s1, spec_drafts=322.0, spec_draft_tokens=1288.0, spec_accepted=490.0)
+        e.hist.append((115.0, s2))
+        w = e.window()
+        # 100 steps, 400 drafted, 150 kept inside the window: 2.5 tokens a step, 37.5 %
+        self.assertEqual((w["tokens_per_step"], w["spec_accept_pct"], w["spec_window"]), (2.5, 37.5, "minute"))
         snap = e.snapshot()
         self.assertNotIn("ttft", snap)                    # buckets stay on the node
         self.assertEqual(snap["models"], ["dsv4"])
@@ -230,7 +242,10 @@ def get(url, headers=None):
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read() or b"{}")
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        finally:
+            e.close()
 
 
 class Http(unittest.TestCase):
@@ -258,8 +273,10 @@ class Http(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(req, timeout=5)
             self.assertEqual(cm.exception.code, 405)
+            cm.exception.close()
         finally:
             srv.shutdown()
+            srv.server_close()
 
     def test_cluster_merges_peers(self):
         worker, wurl = serve_app(rackmon.App(FakeNode("spark-2", "worker"), "tok"))
