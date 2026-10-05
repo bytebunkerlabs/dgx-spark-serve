@@ -10,6 +10,7 @@
 #   rack logs [-f]             head and worker logs
 #   rack bench [label]         measure the running model
 #   rack chat  <text>          one-shot completion against it
+#   rack monitor up            telemetry for every node, one endpoint for the app
 #
 # Install:  ./rack install     (symlinks into ~/.local/bin or /usr/local/bin)
 set -euo pipefail
@@ -72,6 +73,8 @@ rack — drive the two-Spark serving cluster
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, both nodes
   rack scrub [--delete]       every trace a video run leaves: list, or wipe
+  rack monitor up|down|status|token|logs
+                              telemetry for every node behind one endpoint (docs/11-monitor.md)
 
 Recipes live in recipes/. Config is .env. Everything is idempotent.
 EOF
@@ -360,6 +363,10 @@ print('  serving: ' + (', '.join(ms) if ms else 'no models'))" 2>/dev/null || di
   else
     dim "  :$API_PORT on $HEAD_LABEL not answering (still loading, or nothing running)"
   fi
+
+  echo; bold "monitor"
+  HEAD_IP="$HEAD_IP" HEAD_LABEL="$HEAD_LABEL" WORKER_SSH="$WORKER_SSH" \
+    "$ROOT/monitor/rack-monitor.sh" brief 2>/dev/null || dim "  unknown: rack monitor status"
 }
 
 cmd_logs() {
@@ -470,6 +477,8 @@ case "${1:-}" in
   scrub)     shift; cmd_scrub "$@" ;;
   bench)     shift; cmd_bench "$@" ;;
   chat)      shift; cmd_chat "$@" ;;
+  monitor)   shift; HEAD_IP="$HEAD_IP" HEAD_LABEL="$HEAD_LABEL" WORKER_SSH="$WORKER_SSH" \
+               exec "$ROOT/monitor/rack-monitor.sh" "$@" ;;
   install)   shift; cmd_install "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (rack --help)" ;;

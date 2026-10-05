@@ -31,6 +31,7 @@ rack logs [-f] [worker] engine logs
 rack bench [label]      measure whatever is running
 rack chat "hello"       one-shot completion
 rack down               stop everything
+rack monitor up         telemetry for every node behind one endpoint, for the app
 ```
 
 A new model, start to finish:
@@ -156,12 +157,18 @@ scripts/
   launch-solo.sh        one node, one model
   launch-cluster.sh     TP=2 across both nodes (worker first, then head)
   stop-cluster.sh
+monitor/
+  rackmon.py            the monitor: one stdlib file (serve | docker-relay | once)
+  rack-monitor.sh       rack monitor up|down|status|token|logs
+  Dockerfile            python:3.12-slim + rackmon.py
+  test_rackmon.py       python3 -m unittest monitor/test_rackmon.py
 docs/
   00-networking.md      the fabric: what preflight checks and why
   01-solo.md            phase 1 runbook
   02-cluster.md         phase 2 runbook
   03-inkling.md         phase 3 runbook — the capstone
   04-tuning.md          phase 4 — the performance program
+  11-monitor.md         rack monitor: what it measures, the API, reaching it
 recipes/                one env file per model = one reviewed serving profile
 bench/results.jsonl     the lab notebook — committed, append-only
 ```
