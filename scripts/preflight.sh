@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Read-only sanity check of one Spark. Run on BOTH nodes before any launch.
-# Everything checked here is something a launch dies without — usually with an
-# error that looks like a model problem instead of what it really is.
+# Read-only sanity check of one node. rack preflight runs it on every node
+# before a launch. Everything checked here is something a launch dies without
+# — usually with an error that looks like a model problem instead of what it
+# really is. The fabric half runs only where there is a fabric peer.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-[ -f .env ] && . ./.env
-HEAD_IP=${HEAD_IP:-192.168.100.1}
-WORKER_IP=${WORKER_IP:-192.168.100.2}
+. lib/common.sh; . lib/platform.sh; . lib/inventory.sh
+load_site_env
+rack_resolve_site
 FABRIC_IF=${FABRIC_IF:-enp1s0f0np0}
 FABRIC_IF2=${FABRIC_IF2:-enP2p1s0f0np0}
 RDMA_DEV=${RDMA_DEV:-rocep1s0f0}
@@ -18,7 +19,9 @@ no() { printf 'FAIL  %s\n' "$1"; F=$((F+1)); }
 wr() { printf 'warn  %s\n' "$1"; W=$((W+1)); }
 
 # --- the box -----------------------------------------------------------------
-[ "$(uname -m)" = aarch64 ] && ok "aarch64" || no "not aarch64 — is this a Spark?"
+platform_detect
+if [ "$PLATFORM" = unsupported ]; then no "cannot serve here: $PLAT_REASON"
+else ok "$(platform_describe)"; fi
 command -v nvidia-smi >/dev/null 2>&1 && ok "nvidia-smi present" || no "nvidia-smi missing"
 
 if docker info >/dev/null 2>&1; then
@@ -34,7 +37,9 @@ fi
 # --- memory ------------------------------------------------------------------
 # Unified pool: free(1) is the truth. nvidia-smi reports "Not Supported" here.
 avail=$(free -g | awk '/^Mem:/{print $7}')
-if [ "${avail:-0}" -ge 100 ]; then
+if [ "$PLATFORM" != dgx ]; then
+  ok "memory: ${avail:-?} GiB of system memory available (the model lives in GPU memory here)"
+elif [ "${avail:-0}" -ge 100 ]; then
   ok "memory: ${avail} GiB available"
 elif [ "${avail:-0}" -ge 20 ]; then
   wr "memory: ${avail} GiB available — stop the current stack and drop caches before a big load"
@@ -48,8 +53,18 @@ else
   ok "earlyoom not active"
 fi
 
+# --- fabric: only between a head and its workers ------------------------------
+me=$(ip -4 -br addr show "$FABRIC_IF" 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
+peer=""
+if [ -n "${WORKER_IP:-}" ] && [ "$me" = "$WORKER_IP" ]; then peer=${HEAD_IP:-}   # a worker
+elif [ -n "$WORKER_NAMES" ]; then peer=${WORKER_IP:-}; fi                          # a head
+if [ -z "$peer" ]; then
+  ok "one machine: no fabric to check"
+  FABRIC_IF='' FABRIC_IF2='' 
+fi
+
 # --- fabric: two rails, one port ---------------------------------------------
-for i in "$FABRIC_IF" "$FABRIC_IF2"; do
+for i in ${FABRIC_IF:+"$FABRIC_IF"} ${FABRIC_IF2:+"$FABRIC_IF2"}; do
   if [ -e "/sys/class/net/$i" ]; then
     c=$(cat "/sys/class/net/$i/carrier" 2>/dev/null)
     m=$(cat "/sys/class/net/$i/mtu" 2>/dev/null)
@@ -69,6 +84,7 @@ for i in "$FABRIC_IF" "$FABRIC_IF2"; do
   fi
 done
 
+if [ -n "$peer" ]; then
 s1=$(cat "/sys/class/net/$FABRIC_IF/phys_switch_id" 2>/dev/null)
 s2=$(cat "/sys/class/net/$FABRIC_IF2/phys_switch_id" 2>/dev/null)
 if [ -n "$s1" ] && [ "$s1" = "$s2" ]; then
@@ -103,8 +119,6 @@ else
 fi
 
 # --- the peer ----------------------------------------------------------------
-me=$(ip -4 -br addr show "$FABRIC_IF" 2>/dev/null | awk '{print $3}' | cut -d/ -f1)
-peer=$WORKER_IP; [ "$me" = "$WORKER_IP" ] && peer=$HEAD_IP
 if ping -c1 -W2 "$peer" >/dev/null 2>&1; then
   ok "peer $peer reachable over the fabric"
 else
@@ -115,9 +129,10 @@ if ssh -o BatchMode=yes -o ConnectTimeout=4 "$peer" true 2>/dev/null; then
 else
   wr "no passwordless ssh to $peer (required on the head; harmless on the worker)"
 fi
+fi   # the fabric
 
 # --- disk --------------------------------------------------------------------
-da=$(df -BG "$HF_CACHE" 2>/dev/null | awk 'NR==2{gsub("G","",$4); print $4}')
+da=$(disk_free_gb "$HF_CACHE")
 if [ "${da:-0}" -ge 200 ]; then
   ok "disk: ${da} GB free at $HF_CACHE"
 else

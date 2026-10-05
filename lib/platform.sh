@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # the PLAT_* facts are for the scripts that source this
 # lib/platform.sh: what is this machine, and can dgx-serve serve on it?
 #
 # platform_detect sets PLAT_* facts and PLATFORM, one of:
@@ -168,7 +169,7 @@ platform_json() {
   printf '"memory_mb":%s,"unified_memory":%s,"metal_budget_mb":%s,"model_budget_mb":%s,' \
     "$(json_num "$PLAT_MEM_MB")" "$(json_bool "$PLAT_UNIFIED")" "$(json_num "$PLAT_METAL_MB")" "$(json_num "$(platform_model_budget_mb)")"
   printf '"gpus":['
-  local i=1 n name mem cc sep=""
+  local i=1 name mem cc sep=""
   while [ "$i" -le "$PLAT_GPU_COUNT" ]; do
     name=$(printf '%s' "$PLAT_GPU_NAMES" | cut -d';' -f"$i")
     mem=$(printf '%s' "$PLAT_GPU_MEM_MB" | cut -d, -f"$i")

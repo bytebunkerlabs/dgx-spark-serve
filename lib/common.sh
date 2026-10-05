@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # the variables are for the scripts that source this
 # lib/common.sh: helpers shared by rack and its scripts.
 # Bash 3.2 compatible (macOS /bin/bash): no mapfile, no associative arrays,
 # no ${var,,}. GNU or BSD userland. Source it; it defines functions and a few
@@ -62,3 +63,51 @@ write_secret() { # write_secret <path> <value>
   ( umask 077; printf '%s\n' "$value" > "$path.tmp" ) && mv -f "$path.tmp" "$path"
 }
 new_secret() { python3 -c 'import secrets;print(secrets.token_urlsafe(32))'; }
+
+# Where rack init keeps the engine's API key: the key itself, and the same key
+# as an env file for `docker run --env-file`. Both 0600, never printed.
+ENGINE_KEY_FILE=$DGX_SERVE_CONFIG/engine.key
+ENGINE_ENV_FILE=$DGX_SERVE_CONFIG/engine.env
+
+# json_get <key> < document: a top-level value as text (true/false for
+# booleans, the length of a list, empty for null or missing).
+json_get() {
+  python3 -c 'import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+v=d.get(sys.argv[1])
+if isinstance(v,bool): print("true" if v else "false")
+elif isinstance(v,list): print(len(v))
+elif v is not None: print(v)' "$1"
+}
+
+# The interface that owns an IPv4 address (Linux).
+iface_of_ip() { have ip && ip -o -4 addr show 2>/dev/null | awk -v a="$1" 'index($4, a "/") == 1 {print $2; exit}'; }
+
+# One ping with a two-second limit: -W is seconds on Linux, -t on macOS.
+ping_once() {
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then ping -c 1 -t 2 "$1"; else ping -c 1 -W 2 "$1"; fi >/dev/null 2>&1
+}
+
+# Free space in GB where a path is, or would be created (df -P is POSIX).
+disk_free_gb() {
+  local p=$1
+  while [ ! -e "$p" ] && [ "$p" != / ] && [ -n "$p" ]; do p=$(dirname "$p"); done
+  df -Pk "${p:-/}" 2>/dev/null | awk 'NR==2{printf "%d", $4/1048576}'
+}
+
+# A name rack can use for a machine: what follows any user@, with anything
+# that is not a letter, digit, dot, dash or underscore turned into a dash.
+sanitize_name() {
+  printf '%s' "${1##*@}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[^A-Za-z0-9]*//' | cut -c1-63
+}
+
+# Site settings (HF_CACHE, IMAGE, API_PORT, TOPOLOGY...): $DGX_SERVE_CONFIG/rack.env,
+# then the checkout's .env from before 1.0, which therefore still wins.
+# DGX_SERVE_DOTENV points the second somewhere else (tests do).
+load_site_env() {
+  # shellcheck source=/dev/null
+  [ -f "$DGX_SERVE_CONFIG/rack.env" ] && . "$DGX_SERVE_CONFIG/rack.env"
+  # shellcheck source=/dev/null
+  [ -f "${DGX_SERVE_DOTENV:-${RACK_ROOT:-$PWD}/.env}" ] && . "${DGX_SERVE_DOTENV:-${RACK_ROOT:-$PWD}/.env}"
+  return 0
+}

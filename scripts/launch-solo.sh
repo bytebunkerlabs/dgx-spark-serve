@@ -3,7 +3,8 @@
 #   scripts/launch-solo.sh recipes/phase1-qwen3-8b.env
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ -f .env ] && . ./.env
+. lib/common.sh
+load_site_env
 HF_CACHE=${HF_CACHE:-$HOME/dgx/hf}
 IMAGE=${IMAGE:-dgx-spark-serve:dev}
 API_PORT=${API_PORT:-8888}

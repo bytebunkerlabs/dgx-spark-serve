@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch one model TP=2 across both Sparks. Run ON spark-1.
+# Launch one model TP=2 across the head and its worker. Run ON the head.
 #   scripts/launch-cluster.sh recipes/<model>.env [--debug]
 #
 # The mechanics, so you can hold the whole thing in your head:
@@ -14,10 +14,13 @@
 # --distributed-executor-backend here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ -f .env ] && . ./.env
-HEAD_IP=${HEAD_IP:-192.168.100.1}
+. lib/common.sh; . lib/platform.sh; . lib/inventory.sh
+load_site_env
+rack_resolve_site         # head and worker from the inventory (rack nodes), or .env
+[ -n "$WORKER_SSH" ] || { echo "this recipe spans two machines and this rack has one: rack nodes add <worker> --fabric <ip>, or TOPOLOGY=solo in .env for one machine with several GPUs" >&2; exit 1; }
+case "$WORKER_NAMES" in *" "*) echo "launch-cluster.sh drives a head and one worker; this rack has workers $WORKER_NAMES" >&2; exit 1 ;; esac
+[ -n "${HEAD_IP:-}" ] || { echo "the head has no fabric address: rack nodes add <head> --fabric <ip>, or HEAD_IP in .env" >&2; exit 1; }
 WORKER_IP=${WORKER_IP:-192.168.100.2}
-WORKER_SSH=${WORKER_SSH:-spark-2}
 FABRIC_IF=${FABRIC_IF:-enp1s0f0np0}
 IB_HCAS=${IB_HCAS:-rocep1s0f0,roceP2p1s0f0}
 HF_CACHE=${HF_CACHE:-$HOME/dgx/hf}
@@ -36,7 +39,7 @@ SERVE_ARGS=() ENV_EXTRA=() MODS=()
 
 # --- sanity ------------------------------------------------------------------
 me=$(ip -4 -br addr show "$FABRIC_IF" | awk '{print $3}' | cut -d/ -f1)
-[ "$me" = "$HEAD_IP" ] || { echo "this box is $me, not head $HEAD_IP — run on spark-1" >&2; exit 1; }
+[ "$me" = "$HEAD_IP" ] || { echo "this box is ${me:-not on the fabric}, not head $HEAD_IP — run on the head ($HEAD_LABEL)" >&2; exit 1; }
 ssh -o BatchMode=yes -o ConnectTimeout=5 "$WORKER_SSH" true \
   || { echo "no passwordless ssh to $WORKER_SSH" >&2; exit 1; }
 

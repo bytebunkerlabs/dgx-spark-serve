@@ -41,10 +41,15 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
-on_head() { { ip -o addr show 2>/dev/null || true; } | grep -q " $HEAD_IP/"; }
+# rack passes RACK_IS_HEAD (its inventory knows); run directly, owning the
+# head's fabric IP is the test.
+on_head() {
+  [ -n "${RACK_IS_HEAD:-}" ] && { [ "$RACK_IS_HEAD" = 1 ]; return; }
+  { ip -o addr show 2>/dev/null || true; } | grep -q " $HEAD_IP/"
+}
 have_worker() { [ -n "$WORKER_SSH" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 "$WORKER_SSH" true 2>/dev/null; }
 need_head() {
-  on_head || die "rack monitor runs on the head ($HEAD_LABEL, fabric $HEAD_IP): ssh $HEAD_LABEL, then rack monitor ${1:-up}"
+  on_head || die "rack monitor runs on the head ($HEAD_LABEL): ssh $HEAD_LABEL, then rack monitor ${1:-up}"
   command -v docker >/dev/null || die "docker not found on $(hostname)"
 }
 
