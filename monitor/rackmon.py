@@ -420,8 +420,8 @@ def engine_headers():
     return {"Authorization": "Bearer " + key} if key else {}
 
 
-SERVING_KEYS = ("recipe", "model", "served_name", "engine", "runtime", "platform", "port", "nodes", "roles",
-                "dialect", "context", "tools", "reasoning", "vision", "speculative", "key_required",
+SERVING_KEYS = ("recipe", "model", "served_name", "gateway_name", "engine", "runtime", "platform", "port", "nodes",
+                "roles", "dialect", "context", "tools", "reasoning", "vision", "speculative", "key_required",
                 "engine_build", "started_at")
 
 

@@ -300,9 +300,11 @@ class Serving(unittest.TestCase):
         p = os.path.join(self.tmp, "serving.json")
         with open(p, "w") as f:
             json.dump({"recipe": "qwen3-8b", "engine": "llamacpp", "port": 8888, "log": "/home/me/engine.log",
-                       "dialect": {"thinking": "x"}}, f)
+                       "dialect": {"thinking": "x"}, "served_name": "qwen3-8b", "gateway_name": "qwen-8b"}, f)
         d = rackmon.read_serving(p)
         self.assertEqual((d["recipe"], d["engine"], d["port"], d["dialect"]), ("qwen3-8b", "llamacpp", 8888, {"thinking": "x"}))
+        # a router lists the model by its route (rack gateway's name), not the engine's
+        self.assertEqual((d["served_name"], d["gateway_name"]), ("qwen3-8b", "qwen-8b"))
         self.assertNotIn("log", d)
         self.assertIsNone(rackmon.read_serving(os.path.join(self.tmp, "none.json")))
 
