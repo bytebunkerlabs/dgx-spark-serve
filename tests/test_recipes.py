@@ -102,7 +102,7 @@ class Read(Base):
         self.assertRegex(out, r"qwen3-8b\s+solo\s+5.0 GB\s+fits\s+Qwen3-8B-Q4_K_M.gguf \(llamacpp\)")
         d = rack_json(big.rack("recipes", "--mac", "--json"))
         v = d["recipes"][0]["variants"]["mac"]
-        self.assertEqual((v["fits"], v["needs_gb"]), (True, 6.8))
+        self.assertEqual((v["fits"], v["needs_gb"]), (True, 6.0))
         # on another platform the listing filters by variant only
         d = rack_json(big.rack("recipes", "--windows", "--json"))
         self.assertEqual([r["name"] for r in d["recipes"]], ["qwen3-8b"])

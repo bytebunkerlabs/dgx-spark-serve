@@ -145,6 +145,16 @@ class Flags(Base):
         self.assertEqual(rack_json(m.rack("up", "tiny", "--plan", "--json"))["variant"].split("/")[-1], "windows.env")
 
 
+class Version(Base):
+    def test_version_json_is_what_the_app_and_on_check(self):
+        m = self.machine(dgx_spark)
+        d = rack_json(m.rack("version", "--json"))
+        self.assertEqual((d["schema"], d["json_schema"], d["recipe_schema"], d["monitor_schema"]), (1, 1, 2, 1))
+        self.assertEqual(d["engines"]["llama.cpp"], "b11430")
+        self.assertIn('"json_schema":1,', m.rack("version", "--json").stdout)       # what --on greps for
+        self.assertRegex(m.rack("version").stdout, r"^rack 1\.0\.0-dev")
+
+
 class On(Base):
     def remote_rack(self, m, rel="dgx-serve", old=False):
         """A stand-in rack on a node that says where and how it was run, and

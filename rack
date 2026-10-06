@@ -3,7 +3,7 @@
 #
 #   rack init                  detect this machine, import .env, write the inventory
 #   rack nodes add|ls|rm|test  the machines in this rack
-#   rack fit  <hf-id>          will it fit? (asks HuggingFace, does the arithmetic)
+#   rack fit  <recipe|hf-id>   will it fit this machine? (the hub's numbers, this platform's budget)
 #   rack pull <recipe|hf-id>   download + replicate to the workers + verify
 #   rack new  <name> <hf-id>   scaffold a recipe you can edit
 #   rack up   <recipe>         launch (solo or TP=2, from the recipe)
@@ -84,7 +84,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack nodes add <name> [--ssh <target>] [--fabric <ip>] [--role worker|node] ...
   rack nodes rm <name>        forget a machine (touches nothing on it)
   rack nodes test [<name>...] [--json]   ssh, platform, rack installed, fabric
-  rack fit <hf-id>            will it fit? asks HuggingFace, does the arithmetic
+  rack fit <recipe|hf-id>     will it fit this machine? the hub's numbers, this platform's budget
   rack pull <recipe|hf-id>    download, replicate to the workers, verify shards
   rack models                 what's on disk, and where
   rack new <name> <hf-id>     scaffold recipes/<name>.env
@@ -117,14 +117,21 @@ EOF
 # What this rack is, for people and for the app's compatibility check (and for
 # --on, which refuses to forward to a rack that cannot answer this).
 cmd_version() {
-  local commit
+  local commit mon mon_schema
   commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
+  mon=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$ROOT/monitor/rackmon.py" | head -1)
+  mon_schema=$(sed -n 's/^SCHEMA = \([0-9]*\).*/\1/p' "$ROOT/monitor/rackmon.py" | head -1)
   if [ "${1:-}" = --json ]; then
-    printf '{"schema":%s,"version":%s,"commit":%s,"json_schema":%s,"recipe_schema":%s,"platforms":["dgx","linux","windows","mac"]}\n' \
-      "$RACK_JSON_SCHEMA" "$(json_str "$RACK_VERSION")" "$(json_str "$commit")" "$RACK_JSON_SCHEMA" "$RACK_RECIPE_SCHEMA"
+    printf '{"schema":%s,"version":%s,"commit":%s,"json_schema":%s,"recipe_schema":%s,"monitor":%s,"monitor_schema":%s,' \
+      "$RACK_JSON_SCHEMA" "$(json_str "$RACK_VERSION")" "$(json_str "$commit")" "$RACK_JSON_SCHEMA" "$RACK_RECIPE_SCHEMA" \
+      "$(json_str "$mon")" "$(json_num "$mon_schema")"
+    printf '"engines":{"llama.cpp":%s,"vllm":%s},"platforms":["dgx","linux","windows","mac"]}\n' \
+      "$(json_str "$(sed -n 's/^LLAMACPP_BUILD = "\(.*\)".*/\1/p' "$ROOT/py/engines.py")")" \
+      "$(json_str "$(sed -n 's/^VLLM_VERSION = "\(.*\)".*/\1/p' "$ROOT/py/engines.py")")"
     return
   fi
-  printf 'rack %s%s (recipes v%s, json v%s)\n' "$RACK_VERSION" "${commit:+ $commit}" "$RACK_RECIPE_SCHEMA" "$RACK_JSON_SCHEMA"
+  printf 'rack %s%s (recipes v%s, json v%s, monitor %s)\n' "$RACK_VERSION" "${commit:+ $commit}" \
+    "$RACK_RECIPE_SCHEMA" "$RACK_JSON_SCHEMA" "${mon:-?}"
 }
 
 # ----------------------------------------------------------- platform ------
@@ -155,60 +162,27 @@ cmd_platform() {
 cmd_fit() {
   flags_parse "$@"
   set -- ${REST[@]+"${REST[@]}"}
-  [ $# -gt 0 ] || die "usage: rack fit <recipe|org/model> [--dgx|--linux|--windows|--mac]"
+  [ $# -eq 1 ] || die "usage: rack fit <recipe|org/model> [--dgx|--linux|--windows|--mac] [--json]"
   flags_target fit
-  local id; id=$(model_ref "$1")
-  bold "$id"
-  python3 - "$id" "${USABLE_GB:-110}" <<'PY'
-import json, sys, urllib.request
-mid, usable = sys.argv[1], float(sys.argv[2])
-def get(u):
-    with urllib.request.urlopen(u, timeout=60) as r: return json.load(r)
-try:
-    api = get(f"https://huggingface.co/api/models/{mid}?blobs=true")
-except Exception as e:
-    sys.exit(f"  could not reach HuggingFace: {e}")
-sib = api.get("siblings") or []
-disk = sum(s.get("size") or 0 for s in sib)
-shards = sum(1 for s in sib if s["rfilename"].endswith(".safetensors"))
-st = (api.get("safetensors") or {})
-total = st.get("total") or 0
-gb = disk / 1e9
-print(f"  download    {gb:,.1f} GB across {shards} shards")
-if total:
-    print(f"  parameters  {total/1e9:,.1f} B   ({disk*8/total:.2f} effective bpw)")
-# active params, when the config exposes MoE geometry
-try:
-    c = get(f"https://huggingface.co/{mid}/raw/main/config.json")
-    t = c.get("text_config", c)
-    H, L = t.get("hidden_size"), t.get("num_hidden_layers")
-    routed = t.get("n_routed_experts") or t.get("num_experts") or t.get("num_local_experts")
-    if H and L and routed:
-        top = (t.get("num_experts_per_tok") or t.get("num_experts_per_token") or 2)
-        sh = (t.get("n_shared_experts") or t.get("num_shared_experts") or 0)
-        mi = t.get("moe_intermediate_size") or t.get("intermediate_size")
-        w = t.get("routed_expert_hidden_size") or H
-        dense = t.get("first_k_dense_replace") or 0
-        ml = L - dense
-        act = (top + sh) * 3 * w * mi * ml
-        print(f"  active/token ~{act/1e9:,.1f} B in experts  ({top} routed + {sh} shared of {routed})")
-    ctx = t.get("max_position_embeddings")
-    if ctx: print(f"  context     {ctx:,}")
-except Exception:
-    pass
-print()
-for nodes in (1, 2):
-    budget = usable * nodes - 20
-    ok = gb <= budget
-    mark = "fits" if ok else "does not fit"
-    print(f"  {nodes} node{'s' if nodes>1 else ' '}: {gb:,.0f} GB vs {budget:,.0f} GB budget "
-          f"({usable:g} x {nodes} - 20 reserve)  ->  {mark}")
-print("\n  budget assumes 20 GB held back for KV cache and runtime.")
-print("  more at https://fits.bytebunkerlabs.ai")
-PY
+  platform_detect
+  local nodes=1 spec="" ref=$1 json=""
+  [ "$JSON" = 1 ] && json=--json
+  # Sparks pool across the rack; elsewhere a model fits one machine's GPUs.
+  [ "$TARGET_PLATFORM" = dgx ] && nodes=$(( 1 + $(printf '%s' "$WORKER_NAMES" | wc -w | tr -d ' ') ))
+  case "$ref" in
+    */*) ;;
+    *)
+      recipe_resolve "$ref" "$TARGET_PLATFORM"
+      check_resolved >/dev/null || { check_resolved >&2 || true; die "$RECIPE_NAME fails rack recipes check: fix it first"; }
+      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM") \
+        || die "cannot read $RECIPE_NAME for $TARGET_PLATFORM"
+      spec=$(printf '%s' "$spec" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["recipe"]=sys.argv[1]; print(json.dumps(d))' "$RECIPE_NAME") ;;
+  esac
+  local what=(--repo "$ref"); [ -z "$spec" ] || what=(--spec "$spec")
+  python3 "$ROOT/py/fit.py" --platform "$TARGET_PLATFORM" --budget-mb "$(platform_model_budget_mb)" --nodes "$nodes" \
+    "${what[@]}" ${json:+"$json"}
 }
 
-# --------------------------------------------------------------- pull ------
 # A Hugging Face repo id from a command's argument: an org/name as given, or
 # the MODEL of a recipe's variant for the target platform.
 model_ref() {

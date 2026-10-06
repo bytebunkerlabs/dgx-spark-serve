@@ -413,7 +413,8 @@ def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, on
         var.update(describe(v, platform, is_flat))
         var["model"] = v.get("MODEL") or None
         if here == platform and budget_mb:
-            fits, need, usable = rackfit.verdict(var.get("weights_gb"), platform, budget_mb, var["nodes"])
+            fits, need, usable = rackfit.verdict(var.get("weights_gb"), platform, budget_mb, var["nodes"],
+                                                 var.get("engine") or "vllm")
             var["fits"] = fits
             var["needs_gb"] = round(need, 1) if need else None
             var["usable_gb"] = round(usable, 1)
@@ -438,6 +439,7 @@ def pull_spec(file, recipe_dir, root, platform):
     flat = os.path.basename(file) not in [p + ".env" for p in PLATFORMS]
     v = source(file, recipe_dir, root)
     engine = engine_of(v, platform, flat)
+    d = describe(v, platform, flat)
     if engine == "llamacpp":
         a = v.get("ARTIFACT") or ""
         if not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):
@@ -452,11 +454,14 @@ def pull_spec(file, recipe_dir, root, platform):
                 specs[0]["files"].append(p2)
             else:
                 specs.append({"repo": o2 + "/" + r2, "revision": "main", "files": [p2]})
-        return {"engine": engine, "pulls": specs}
+        return {"engine": engine, "pulls": specs, "model": v.get("MODEL") or None,
+                "context": d["context"], "kv_fp8": False}
     model = v.get("MODEL") or ""
     if model.count("/") != 1 or model.startswith("/"):
         raise ValueError("MODEL is not a Hugging Face repo (%s): nothing to fetch" % (model or "nothing"))
-    return {"engine": engine, "pulls": [{"repo": model, "revision": v.get("MODEL_REVISION") or "main", "weights": True}]}
+    kv = flag(v.get("SERVE_ARGS", []), "--kv-cache-dtype")
+    return {"engine": engine, "pulls": [{"repo": model, "revision": v.get("MODEL_REVISION") or "main", "weights": True}],
+            "model": model, "context": d["context"], "kv_fp8": isinstance(kv, str) and kv.startswith("fp8")}
 
 
 def read_index(stream):

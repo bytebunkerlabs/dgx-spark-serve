@@ -64,12 +64,14 @@ class Hub:
                     if r.get("gated") and self.headers.get("Authorization") != "Bearer " + hub.token:
                         return self.fail(401)
                     sib = []
-                    for path, (data, lfs) in sorted(r["files"].items()):
-                        s = {"rfilename": path, "size": len(data), "blobId": git_sha1(data)}
+                    for path, spec in sorted(r["files"].items()):
+                        data, lfs = spec[0], spec[1]
+                        size = spec[2] if len(spec) > 2 else len(data)      # a size to report, not serve
+                        s = {"rfilename": path, "size": size, "blobId": git_sha1(data)}
                         if lfs:
-                            s["lfs"] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+                            s["lfs"] = {"sha256": hashlib.sha256(data).hexdigest(), "size": size}
                         sib.append(s)
-                    body = json.dumps({"id": repo, "sha": COMMIT, "siblings": sib}).encode()
+                    body = json.dumps(dict({"id": repo, "sha": COMMIT, "siblings": sib}, **r.get("meta", {}))).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -83,7 +85,7 @@ class Hub:
                         return self.fail(404)
                     if r.get("gated") and self.headers.get("Authorization") != "Bearer " + hub.token:
                         return self.fail(401)
-                    data, lfs = r["files"][path]
+                    data, lfs = r["files"][path][:2]
                     if lfs:                                   # LFS files live on the CDN
                         key = hashlib.sha256(data).hexdigest()
                         hub.blobs[key] = data
@@ -244,6 +246,68 @@ class Download(Base):
         with self.assertRaises(hfget.HubError) as e:
             hfget.pull("org/model", files=["nope.gguf"], cache=self.cache, quiet=True)
         self.assertIn("not in the repo: nope.gguf", str(e.exception))
+
+
+QWEN3_8B = {"num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128,
+            "hidden_size": 4096, "max_position_embeddings": 40960}
+GB = 10 ** 9
+
+
+class Fit(Base):
+    """rack fit, on the hub's numbers (reported sizes; nothing is downloaded)."""
+
+    def setUp(self):
+        super().setUp()
+        cfg = json.dumps(QWEN3_8B).encode()
+        self.hub.repos["org/big"] = {"meta": {"safetensors": {"total": 8190735360}}, "files": {
+            "config.json": (cfg, False),
+            "model-00001-of-00002.safetensors": (b"a", True, 8 * GB),
+            "model-00002-of-00002.safetensors": (b"b", True, int(8.4 * GB)),
+            "model.safetensors.index.json": (b"{}", False)}}
+        self.hub.repos["org/big-GGUF"] = {"meta": {"gguf": {"total": 8190735360, "context_length": 40960},
+                                                   "cardData": {"base_model": "org/big"}}, "files": {
+            "big-Q4_K_M.gguf": (b"q4", True, int(5.0 * GB)),
+            "big-Q8_0.gguf": (b"q8", True, int(8.7 * GB)),
+            "big-F16.gguf": (b"f16", True, int(16.4 * GB))}}
+        import fit
+        self.fit = fit
+
+    def test_kv_cache_per_token(self):
+        self.assertEqual(self.fit.kv_bytes_per_token(QWEN3_8B), 147456)          # 144 KiB, bf16
+        mla = {"num_hidden_layers": 61, "kv_lora_rank": 512, "qk_rope_head_dim": 64}
+        self.assertEqual(self.fit.kv_bytes_per_token(mla), 61 * 576 * 2)
+        self.assertIsNone(self.fit.kv_bytes_per_token({}))
+
+    def test_one_spark_and_two(self):
+        r = self.fit.fit("dgx", 124610, 2, repo="org/big")
+        self.assertGreaterEqual(r["download_bytes"], int(16.4 * GB))
+        self.assertEqual((r["parameters"], r["native_context"]), (8190735360, 40960))
+        self.assertEqual([(v["nodes"], v["fits"], v["max_context"]) for v in r["verdicts"]],
+                         [(1, True, 40960), (2, True, 40960)])
+
+    def test_a_small_gpu_reads_the_gguf_quants(self):
+        r = self.fit.fit("windows", 8192, 1, repo="org/big-GGUF")        # an 8 GB RTX 2070
+        self.assertEqual([(q["file"], q["fits"]) for q in r["quants"]],
+                         [("big-Q4_K_M.gguf", True), ("big-Q8_0.gguf", False), ("big-F16.gguf", False)])
+        self.assertEqual(r["quants"][0]["max_context"], 11528)          # 1.7 GB of room at 144 KiB a token
+        spec = {"pulls": [{"repo": "org/big-GGUF", "revision": "main", "files": ["big-Q4_K_M.gguf"]}],
+                "model": "org/big", "context": 8192, "recipe": "big"}
+        r = self.fit.fit("windows", 8192, 1, spec=spec)                   # the recipe's 8k window fits
+        self.assertEqual((r["context"], r["verdicts"][0]["fits"]), (8192, True))
+
+    def test_rack_fit_on_a_mac(self):
+        m = FakeMachine()
+        try:
+            mac_m4(m)                                                     # 16 GB: about 10.7 GB for the GPU
+            r = m.rack("fit", "org/big-GGUF", "--json", extra_env={"HF_ENDPOINT": self.hub.url})
+            d = rack_json(r)
+            self.assertEqual((d["platform"], d["budget_mb"]), ("mac", 10922))
+            self.assertEqual([q["fits"] for q in d["quants"]], [True, True, False])
+            human = m.rack("fit", "org/big-GGUF", extra_env={"HF_ENDPOINT": self.hub.url}).stdout
+            self.assertIn("about 11 GiB of the Metal working-set limit on this Mac", human)
+            self.assertNotIn("dgx", m.rack("fit", "org/big", "--dgx", extra_env={"HF_ENDPOINT": self.hub.url}).stdout)
+        finally:
+            m.cleanup()
 
 
 class RackPull(Base):
