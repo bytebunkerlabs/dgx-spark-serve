@@ -260,7 +260,8 @@ class Init(Base):
         self.assertGreaterEqual(len(key), 40)
         self.assertNotIn(key, r.stdout + r.stderr)
         self.assertEqual(open(m.config_path("engine.env")).read(), "VLLM_API_KEY=%s\n" % key)
-        for f in ("engine.key", "engine.env"):
+        self.assertEqual(open(m.config_path("gateway.env")).read(), "DGX_SERVE_ENGINE_KEY=%s\n" % key)
+        for f in ("engine.key", "engine.env", "gateway.env"):
             self.assertEqual(os.stat(m.config_path(f)).st_mode & 0o777, 0o600, f)
         # after init the same answers come from the inventory
         self.assertEqual(self.site(m)[:6], ["1", "spark-2", "spark-2", "spark-1", "192.168.100.1", "192.168.100.2"])
@@ -279,6 +280,17 @@ class Init(Base):
         self.ok(m.rack("init"))
         self.assertIsNone(node_file(m, "gpu2"))                 # not re-imported
         self.assertEqual(open(m.config_path("engine.key")).read(), key)
+
+    def test_a_key_from_before_gets_its_gateway_form(self):
+        m = self.machine(linux_4090x2, name="gpu-box")
+        m.dotenv("WORKER_SSH=\n")
+        self.ok(m.rack("init"))
+        key = open(m.config_path("engine.key")).read().strip()
+        os.remove(m.config_path("gateway.env"))                 # a site from before gateway.env
+        self.ok(m.rack("init"))
+        self.assertEqual(open(m.config_path("engine.key")).read().strip(), key)
+        self.assertEqual(open(m.config_path("gateway.env")).read(), "DGX_SERVE_ENGINE_KEY=%s\n" % key)
+        self.assertEqual(os.stat(m.config_path("gateway.env")).st_mode & 0o777, 0o600)
 
     def test_single_box_json(self):
         m = self.machine(linux_4090x2, name="gpu-box")

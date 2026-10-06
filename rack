@@ -568,8 +568,13 @@ rack_nodes_lines() {
 # The engine's API key, made on first use when rack init never ran.
 ensure_engine_key() {
   case "${ENGINE_KEY:-on}" in off|0|no|none) return 0 ;; esac
-  [ -s "$ENGINE_KEY_FILE" ] || { write_secret "$ENGINE_KEY_FILE" "$(new_secret)"; dim "  new engine key in $ENGINE_KEY_FILE"; }
-  [ -s "$ENGINE_ENV_FILE" ] || write_secret "$ENGINE_ENV_FILE" "VLLM_API_KEY=$(cat "$ENGINE_KEY_FILE")"
+  if [ -s "$ENGINE_KEY_FILE" ]; then
+    engine_key_forms
+  else
+    write_secret "$ENGINE_KEY_FILE" "$(new_secret)"
+    dim "  new engine key in $ENGINE_KEY_FILE"
+    engine_key_forms new
+  fi
 }
 
 # Report a node line, distinguishing "nothing running" from "could not look".

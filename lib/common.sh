@@ -68,6 +68,20 @@ new_secret() { python3 -c 'import secrets;print(secrets.token_urlsafe(32))'; }
 # as an env file for `docker run --env-file`. Both 0600, never printed.
 ENGINE_KEY_FILE=$DGX_SERVE_CONFIG/engine.key
 ENGINE_ENV_FILE=$DGX_SERVE_CONFIG/engine.env
+GATEWAY_ENV_FILE=$DGX_SERVE_CONFIG/gateway.env
+
+# The engine key's other forms, beside it and 0600 like it: what the engine
+# reads (VLLM_API_KEY) and what a LiteLLM gateway reads (DGX_SERVE_ENGINE_KEY,
+# through env_file in its compose service, so no config you commit holds it).
+# Written when missing, and again for a new key (engine_key_forms new).
+engine_key_forms() {
+  if [ ! -s "$ENGINE_ENV_FILE" ] || [ "${1:-}" = new ]; then
+    write_secret "$ENGINE_ENV_FILE" "VLLM_API_KEY=$(cat "$ENGINE_KEY_FILE")"
+  fi
+  if [ ! -s "$GATEWAY_ENV_FILE" ] || [ "${1:-}" = new ]; then
+    write_secret "$GATEWAY_ENV_FILE" "DGX_SERVE_ENGINE_KEY=$(cat "$ENGINE_KEY_FILE")"
+  fi
+}
 
 # json_get <key> < document: a top-level value as text (true/false for
 # booleans, the length of a list, empty for null or missing).

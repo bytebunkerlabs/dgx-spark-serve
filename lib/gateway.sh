@@ -65,7 +65,7 @@ gateway_sync() {
         "http://$(gateway_engine_host):$port/v1" "$key_ref") || die "gateway: not changed"
   if [ "$out" = unchanged ]; then dim "  gateway: $name already routed"; return 0; fi
   bold "gateway: $name -> $served on :$port (between dgx-serve's markers in $GATEWAY_CONFIG)"
-  [ "$key_ref" = none ] || dim "  LiteLLM needs the engine key in its environment as DGX_SERVE_ENGINE_KEY ($ENGINE_KEY_FILE)"
+  [ "$key_ref" = none ] || dim "  LiteLLM reads the engine key as DGX_SERVE_ENGINE_KEY: env_file $GATEWAY_ENV_FILE in its compose service (docs/12-platforms.md)"
   gateway_reload "$name" present
 }
 

@@ -55,6 +55,7 @@ for itself there over ssh; `rack nodes add --rack-dir` says otherwise).
 |---|---|
 | `nodes/<name>.env` | the inventory: one file per machine (this one, its workers, other machines you serve on) |
 | `engine.key`, `engine.env` | the engine's API key (0600, never printed); `rack up` hands it to the engine |
+| `gateway.env` | the same key as `DGX_SERVE_ENGINE_KEY`, for a LiteLLM gateway's `env_file` (0600) |
 | `rack.env` | site settings (optional; the checkout's `.env` from before 1.0 still works and wins) |
 | `recipes/` | your own recipes, kept across updates; a name here hides the checkout's |
 | `mods/` | your own mods, for your own recipes: `MODS=(mods/<name>)` looks here when the checkout has no such mod |
@@ -263,7 +264,19 @@ model_list:
 rack edits only between those lines, by scanning them (no YAML library), so a
 hand-kept config keeps its comments; the previous file stays as `.bak`. A
 name already routed by hand is refused until `rack gateway adopt <name>` moves
-it in. LiteLLM needs `DGX_SERVE_ENGINE_KEY` (the engine key) in its environment.
+it in. LiteLLM reads the engine key from its environment as
+`DGX_SERVE_ENGINE_KEY`. rack keeps that in `~/.config/dgx-serve/gateway.env`
+(0600), so the gateway's compose service reads it and no file you commit holds
+the key:
+
+```yaml
+  litellm:
+    env_file:
+      - path: ${HOME}/.config/dgx-serve/gateway.env
+        required: false
+```
+
+then `docker compose up -d --no-deps litellm` to recreate the gateway with it.
 
 ```bash
 rack gateway              # the config, what rack keeps, what is by hand

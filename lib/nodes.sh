@@ -320,9 +320,7 @@ cmd_init() {
     write_secret "$ENGINE_KEY_FILE" "$(new_secret)"
     key_note="created"
   fi
-  if [ ! -s "$ENGINE_ENV_FILE" ] || [ "$key_note" = created ]; then
-    write_secret "$ENGINE_ENV_FILE" "VLLM_API_KEY=$(cat "$ENGINE_KEY_FILE")"
-  fi
+  if [ "$key_note" = created ]; then engine_key_forms new; else engine_key_forms; fi
 
   init_checks
   local fails all_ok=0
