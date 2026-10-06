@@ -39,8 +39,8 @@ Three layers, and everything belongs to exactly one:
 You can check your own layering in one glance: **how short is your thinnest
 recipe?** If a variant recipe — same model, one node over — is longer than a
 few lines, plumbing has leaked upward into the model layer. In this repo
-`recipes/h3-spark2-sage.env` is two lines: a source of its sibling, and one
-`--host`. Everything else was already true somewhere it belonged.
+`recipes/qwen3-8b/dgx.env` sources `model.env`, which holds what every
+platform shares, and says only what a Spark needs.
 
 ---
 

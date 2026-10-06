@@ -13,9 +13,9 @@
 a container holding a model in unified memory, to a number in a JSONL file, to
 nothing left running.*
 
-*This is the narrative. The exhaustive reference — every variable, every knob,
-every failure string, recovery drills, and the tool's own known blind spots —
-is [docs/07-operators-manual.md](07-operators-manual.md).*
+*This is the narrative. For dgx-serve 1.0 on every platform (Spark, NVIDIA
+Linux, Windows, Mac), the commands and their flags, see
+[docs/12-platforms.md](12-platforms.md).*
 
 ---
 
@@ -166,7 +166,7 @@ flag's value is JSON:
 --compilation-config '{"cudagraph_mode":"PIECEWISE","custom_ops":["all"]}'
 ```
 
-It also explains inheritance for free — `. recipes/h3-sage.env` at the top of a
+It also explains inheritance for free — `. recipes/dsv4.env` at the top of a
 variant, then `SERVE_ARGS+=(--host 192.168.100.2)`. It's just sourcing. Last
 flag wins, which is how a two-line variant overrides a bind address without
 restating anything.

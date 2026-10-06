@@ -134,7 +134,9 @@ class Flags(Base):
     def test_pull_takes_a_recipe_or_a_repo(self):
         # (downloads themselves: test_hfget.py, against a fake hub)
         m = self.machine(dgx_spark)
-        self.fails(m.rack("pull", "h3", "--plan"), "is not a Hugging Face repo")
+        self.recipe(m, "localpath", {"model.env": "MODEL=/root/.cache/huggingface/local/some/model\n",
+                                     "dgx.env": '. "$RECIPE_DIR/model.env"\nENGINE=vllm\nSERVE_ARGS=()\n'})
+        self.fails(m.rack("pull", "localpath", "--plan"), "is not a Hugging Face repo")
         self.fails(m.rack("pull", "nope", "--plan"), "no such recipe: nope")
         self.fails(m.rack("pull", "phase1", "--plan"), "cannot reach http://127.0.0.1:9")
 

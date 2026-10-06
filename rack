@@ -109,7 +109,6 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack bench [label]          measure the running model
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, every node
-  rack scrub [--delete]       every trace a video run leaves: list, or wipe
   rack gateway [status|sync|remove <name>|adopt <name>]
                               a LiteLLM route per serving recipe, when GATEWAY_CONFIG is set
   rack monitor up [--bare]|down|status|token|logs
@@ -299,7 +298,7 @@ recipe_parent() {
 }
 
 # MODEL= of a recipe, following `. recipes/parent.env` inheritance. A variant
-# recipe (h3-spark2-sage) declares no MODEL of its own — that is the layering
+# recipe declares no MODEL of its own — that is the layering
 # working, so read through to the parent rather than reporting nothing.
 recipe_model() {
   local f=$1 depth=${2:-0} m parent
@@ -687,17 +686,6 @@ else echo 'no engine logs on this node (rack status)'; fi"
   fi
 }
 
-cmd_scrub() {
-  local n
-  bold "$(local_label)"
-  bash "$ROOT/scripts/scrub.sh" "$@" || true
-  for n in $WORKER_NAMES; do
-    echo; bold "$n"
-    if node_up "$n"; then on_worker_script "$n" scrub.sh "$@" || true
-    else dim "  unreachable over ssh ($(node_ssh "$n"))"; fi
-  done
-}
-
 cmd_net() {
   local n
   bold "$(local_label)"
@@ -819,7 +807,6 @@ case "${1:-}" in
   status)    shift; cmd_status "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
   net)       shift; cmd_net "$@" ;;
-  scrub)     shift; cmd_scrub "$@" ;;
   bench)     shift; cmd_bench "$@" ;;
   chat)      shift; cmd_chat "$@" ;;
   monitor)   shift; monitor_env exec "$ROOT/monitor/rack-monitor.sh" "$@" ;;
