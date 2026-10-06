@@ -57,6 +57,7 @@ for itself there over ssh; `rack nodes add --rack-dir` says otherwise).
 | `engine.key`, `engine.env` | the engine's API key (0600, never printed); `rack up` hands it to the engine |
 | `rack.env` | site settings (optional; the checkout's `.env` from before 1.0 still works and wins) |
 | `recipes/` | your own recipes, kept across updates; a name here hides the checkout's |
+| `mods/` | your own mods, for your own recipes: `MODS=(mods/<name>)` looks here when the checkout has no such mod |
 | `hf-token` | a Hugging Face read token, for gated models (optional) |
 
 It lists what serving here still needs, each with its fix, and exits non-zero

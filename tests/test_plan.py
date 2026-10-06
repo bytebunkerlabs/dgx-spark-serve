@@ -198,6 +198,25 @@ class Plans(Base):
         self.assertTrue(any("--host 0.0.0.0 itself" in n for n in p["notes"]))
         self.assertEqual(scripts["spark-1"].count("--port"), 1)
 
+    def test_a_private_recipe_with_a_private_mod(self):
+        # the site's own one-file recipe and its mod live in the overlay, not the checkout
+        m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
+        self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        os.makedirs(m.config_path("recipes"), exist_ok=True)
+        with open(m.config_path("recipes", "mine.env"), "w") as f:
+            f.write("MODEL=org/Big\nSERVE_ARGS=(--tensor-parallel-size 2 --served-model-name big-one)\n"
+                    "MODS=(mods/topk-patch)\n")
+        mod = m.config_path("mods", "topk-patch")
+        os.makedirs(mod)
+        with open(os.path.join(mod, "run.sh"), "w") as f:
+            f.write("#!/bin/bash\ntrue\n")
+        p = self.plan(m, "mine")
+        mods = steps(p, "mod")
+        self.assertEqual(sorted(s["node"] for s in mods), ["spark-1", "spark-2"])
+        self.assertTrue(all(s["src"] == mod for s in mods))
+        scripts = {s["node"]: s["content"] for s in steps(p, "write") if s.get("container") == "serve_node"}
+        self.assertIn("--served-model-name big-one", scripts["spark-1"])     # its own served name, kept
+
     def four_sparks(self):
         m = self.machine(dgx_spark, name="s1", ips=[("f0", "10.9.0.1")])
         self.assertEqual(m.rack("init", "--name", "s1").returncode, 0)

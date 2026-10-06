@@ -281,6 +281,17 @@ def docker_common(site, node, recipe, platform, facts, cap, head):
     return a
 
 
+def mod_dir(site, m):
+    """A mod a recipe names: in the checkout, else in the site's private
+    overlay ($DGX_SERVE_CONFIG/mods/...), beside its own recipes."""
+    m = m.rstrip("/")
+    for base in (site.root, site.config):
+        p = os.path.join(base, m)
+        if os.path.isdir(p):
+            return p
+    raise PlanError("mod missing: %s (not in %s or %s)" % (m, site.root, site.config))
+
+
 def image_of(site, v, platform):
     return v.get("IMAGE") or site.site_image or engines.VLLM_IMAGE.get(platform, "")
 
@@ -318,7 +329,7 @@ def plan_docker_solo(site, p, c, facts, replace):
     for m in v.get("MODS", []):
         if not m:
             continue
-        overlay = os.path.join(site.root, m, "overlay")
+        overlay = os.path.join(mod_dir(site, m), "overlay")
         if not os.path.isdir(overlay):
             raise PlanError("mod has no overlay/ dir: %s" % m)
         for dirpath, _, files in os.walk(overlay):
@@ -436,9 +447,7 @@ def plan_cluster(site, p, c, nodes, facts, replace, boot):
     for m in v.get("MODS", []):
         if not m:
             continue
-        src = os.path.join(site.root, m)
-        if not os.path.isdir(src):
-            raise PlanError("mod missing: %s" % m)
+        src = mod_dir(site, m)
         for n in nodes:
             steps.append(step(n, "mod", "apply mod %s" % os.path.basename(m), container=NODE, src=src,
                               name=os.path.basename(m.rstrip("/"))))
