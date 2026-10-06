@@ -21,7 +21,7 @@ platform_detect() {
   PLAT_WSL=0 PLAT_DGX=0 PLAT_CPU="" PLAT_OS_NAME="" PLAT_OS_VERSION="" PLAT_WINDOWS_BUILD=""
   PLAT_GPU_COUNT=0 PLAT_GPU_NAMES="" PLAT_GPU_MEM_MB="" PLAT_GPU_CC="" PLAT_DRIVER="" PLAT_CUDA=""
   PLAT_MEM_MB=0 PLAT_METAL_MB=0 PLAT_UNIFIED=0
-  PLAT_DOCKER=0 PLAT_NVIDIA_RUNTIME=0 PLAT_INIT=none
+  PLAT_DOCKER=0 PLAT_NVIDIA_RUNTIME=0 PLAT_INIT=none PLAT_LINGER=""
   local osr
   case "$PLAT_OS" in
     linux)
@@ -35,6 +35,16 @@ platform_detect() {
       PLAT_OS_VERSION=$(printf '%s\n' "$osr" | sed -n 's/^VERSION_ID=//p' | head -1 | tr -d '"')
       PLAT_CPU=$(_plat_file /proc/cpuinfo | awk -F: '/^model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}' || true)
       [ -d "${RACK_SYSROOT:-}/run/systemd/system" ] && PLAT_INIT=systemd
+      # Linger: the user's systemd runs from boot, not from their first login
+      # to their last logout. logind keeps it as a file per user.
+      if [ "$PLAT_INIT" = systemd ]; then
+        PLAT_LINGER=0
+        if have loginctl; then
+          [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" = yes ] && PLAT_LINGER=1
+        elif [ -e "${RACK_SYSROOT:-}/var/lib/systemd/linger/$(id -un)" ]; then
+          PLAT_LINGER=1
+        fi
+      fi
       if [ "$PLAT_WSL" = 1 ] && have cmd.exe; then
         # "Microsoft Windows [Version 10.0.26100.4652]": the build says 10 or 11
         PLAT_WINDOWS_BUILD=$(cmd.exe /c ver 2>/dev/null | tr -d '\r' | sed -n 's/.*Version [0-9]*\.[0-9]*\.\([0-9]*\).*/\1/p' | head -1 || true)
@@ -177,7 +187,8 @@ platform_json() {
     printf '%s{"name":%s,"memory_mb":%s,"compute_capability":%s}' "$sep" "$(json_str "$name")" "$(json_num "$mem")" "$(json_str "$cc")"
     sep=,; i=$((i + 1))
   done
-  printf '],"driver":%s,"cuda":%s,"docker":%s,"nvidia_container_runtime":%s,"init":%s,"reason":%s}\n' \
+  printf '],"driver":%s,"cuda":%s,"docker":%s,"nvidia_container_runtime":%s,"init":%s,"linger":%s,"reason":%s}\n' \
     "$(json_str "$PLAT_DRIVER")" "$(json_str "$PLAT_CUDA")" "$(json_bool "$PLAT_DOCKER")" \
-    "$(json_bool "$PLAT_NVIDIA_RUNTIME")" "$(json_str "$PLAT_INIT")" "$(json_str "$PLAT_REASON")"
+    "$(json_bool "$PLAT_NVIDIA_RUNTIME")" "$(json_str "$PLAT_INIT")" \
+    "$(if [ -n "$PLAT_LINGER" ]; then json_bool "$PLAT_LINGER"; else printf null; fi)" "$(json_str "$PLAT_REASON")"
 }

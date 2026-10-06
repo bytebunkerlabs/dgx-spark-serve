@@ -4,9 +4,11 @@ nodes; then rack up and rack down for real against stand-in tools.
     python3 -m unittest discover -s tests
 """
 import http.server
+import io
 import json
 import os
 import plistlib
+import sys
 import threading
 import unittest
 
@@ -171,6 +173,7 @@ class Plans(Base):
     def test_two_sparks(self):
         m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
         self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        m.cmd("loginctl", "echo yes")                                          # linger
         p = self.plan(m, "phase2-gpt-oss-120b")
         self.assertEqual([n["name"] for n in p["nodes"]], ["spark-1", "spark-2"])
         self.assertEqual(p["master"], "192.168.100.1:29501")
@@ -216,6 +219,28 @@ class Plans(Base):
         self.assertTrue(all(s["src"] == mod for s in mods))
         scripts = {s["node"]: s["content"] for s in steps(p, "write") if s.get("container") == "serve_node"}
         self.assertIn("--served-model-name big-one", scripts["spark-1"])     # its own served name, kept
+
+    def test_no_boot_unit_without_linger(self):
+        # without linger the user's systemd starts at a login, not at boot: a
+        # unit there would re-form a serving engine whenever someone logs in
+        m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
+        self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        p = self.plan(m, "phase2-gpt-oss-120b")
+        self.assertEqual([s for s in steps(p, "write") if s["path"].endswith("dgx-serve-boot.service")], [])
+        self.assertIn(["systemctl", "--user", "disable", "dgx-serve-boot.service"], runs(p, "spark-1"))
+        self.assertTrue(any(s["path"].endswith("dgx-serve-boot.service") for s in steps(p, "remove")))
+        self.assertTrue(any("sudo loginctl enable-linger" in n for n in p["notes"]), p["notes"])
+        init = {c["check"]: c for c in rack_json(m.rack("init", "--json"))["checks"]}
+        self.assertEqual(init["linger"]["status"], "warn")
+
+    def test_boot_starts_by_asking_whether_the_engine_answers(self):
+        m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
+        self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        m.cmd("loginctl", "echo yes")
+        p = self.plan(m, "phase2-gpt-oss-120b", "--boot")
+        self.assertEqual(p["steps"][0]["kind"], "up-already")
+        self.assertEqual(p["steps"][0]["url"], "http://127.0.0.1:8888/health")
+        self.assertNotIn("up-already", [s["kind"] for s in self.plan(m, "phase2-gpt-oss-120b", "--replace")["steps"]])
 
     def test_a_private_recipe_on_a_private_parent(self):
         # `. recipes/base.env` in the overlay reads the overlay's base (the checkout has none)
@@ -311,6 +336,22 @@ class Execute(Base):
             json.dump({"weight_map": {"a": "model-1.safetensors"}}, f)
         open(os.path.join(snap, "model-1.safetensors"), "w").close()
         m.dotenv("HF_CACHE=%s/hf\n" % m.home)
+
+    def test_boot_leaves_an_answering_engine_alone(self):
+        import types
+        sys.path.insert(0, os.path.join(ROOT, "py"))
+        import serve
+        here = types.SimpleNamespace(name="box", local=True)
+        site = types.SimpleNamespace(nodes=[here], head=here)
+        out = io.StringIO()
+        stop = [{"node": "box", "kind": "run", "what": "tear down", "argv": ["false"]}]
+        up = {"node": "box", "kind": "up-already", "what": "answers?",
+              "url": "http://127.0.0.1:%d/health" % self.port}
+        self.assertFalse(serve.Executor(site, {"steps": [up] + stop}, out).execute())
+        self.assertIn("already answers", out.getvalue())
+        down = dict(up, url="http://127.0.0.1:%d/health" % free_port())         # after a reboot: nothing answers
+        with self.assertRaises(serve.PlanError):
+            serve.Executor(site, {"steps": [down] + stop}, io.StringIO()).execute()
 
     def test_dgx_solo_up_and_down(self):
         m = self.machine(dgx_spark)

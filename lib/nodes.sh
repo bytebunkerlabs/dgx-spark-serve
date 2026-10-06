@@ -402,12 +402,10 @@ init_checks() {
          init_check warn "service manager" "no systemd: engines restart through Docker, but the cluster boot unit and the bare monitor need it"
        fi ;;
   esac
-  if [ "$PLAT_INIT" = systemd ] && have loginctl; then
-    if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" = yes ]; then
-      init_check ok linger "user services keep running after logout"
-    else
-      init_check warn linger "user services stop at logout: sudo loginctl enable-linger $(id -un)"
-    fi
+  if [ "$PLAT_LINGER" = 1 ]; then
+    init_check ok linger "user services keep running after logout"
+  elif [ "$PLAT_LINGER" = 0 ]; then
+    init_check warn linger "user services run only while you are logged in, and a cluster is not re-formed after a reboot: sudo loginctl enable-linger $(id -un)"
   fi
 
   free=$(disk_free_gb "$HF_CACHE")

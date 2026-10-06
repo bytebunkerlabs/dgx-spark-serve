@@ -22,6 +22,7 @@ and the API key, and caps a container's memory from the machine's total.
 """
 import argparse
 import datetime
+import getpass
 import json
 import os
 import plistlib
@@ -45,11 +46,11 @@ ENGINE_LABEL = "ai.bytebunker.dgx-serve=engine"
 MEM_RESERVE_GB = {"dgx": 9, "linux": 8, "windows": 4}
 # What a plan assumes about a machine it cannot see (--plan for another platform)
 ASSUMED_FACTS = {
-    "dgx": {"os": "linux", "arch": "aarch64", "memory_mb": 124610, "cuda": "13.0", "init": "systemd",
+    "dgx": {"os": "linux", "arch": "aarch64", "memory_mb": 124610, "cuda": "13.0", "init": "systemd", "linger": True,
             "docker": True, "gpus": [{"name": "NVIDIA GB10", "memory_mb": 0}]},
-    "linux": {"os": "linux", "arch": "x86_64", "memory_mb": 65536, "cuda": "12.9", "init": "systemd",
+    "linux": {"os": "linux", "arch": "x86_64", "memory_mb": 65536, "cuda": "12.9", "init": "systemd", "linger": True,
               "docker": True, "gpus": [{"name": "NVIDIA GeForce RTX 4090", "memory_mb": 24564}]},
-    "windows": {"os": "linux", "arch": "x86_64", "memory_mb": 32768, "cuda": "12.9", "init": "systemd",
+    "windows": {"os": "linux", "arch": "x86_64", "memory_mb": 32768, "cuda": "12.9", "init": "systemd", "linger": True,
                 "wsl": True, "docker": False, "gpus": [{"name": "NVIDIA GeForce RTX 2070", "memory_mb": 8192}]},
     "mac": {"os": "darwin", "arch": "arm64", "memory_mb": 16384, "metal_budget_mb": 10922, "init": "launchd",
             "docker": False, "gpus": []},
@@ -406,6 +407,10 @@ def plan_cluster(site, p, c, nodes, facts, replace, boot):
     p["master"] = "%s:%d" % (head.fabric_ip, site.master_port)
     steps = p["steps"]
     if boot:
+        # The boot unit re-forms an engine that a reboot left idle; one that
+        # answers is left alone, whatever started the unit.
+        steps.append(step(head, "up-already", "nothing to re-form while the engine answers",
+                          url="http://127.0.0.1:%d/health" % c["port"]))
         steps.append(step(head, "reach", "every worker answers over ssh (after a reboot they take a while)",
                           nodes=[n.name for n in nodes[1:]], timeout=600))
     steps += guard_steps(site, nodes, [SOLO, NODE], replace or boot, True, c["port"])
@@ -465,16 +470,24 @@ def plan_cluster(site, p, c, nodes, facts, replace, boot):
                           path="/workspace/launch.sh", content=script, mode="0755"))
         steps.append(run(n, ["docker", "exec", "-d", NODE, "bash", "-c", "bash /workspace/launch.sh >> /proc/1/fd/1 2>&1"],
                          "launch rank %d%s" % (rank, " (headless)" if rank else ", the API server")))
-    steps += boot_unit_steps(site, head, c)
+    steps += boot_unit_steps(site, head, c, facts, p["notes"])
     steps.append(wait_step(site, head, c["port"], ["docker", "logs", "-f", "--tail", "20", NODE],
                            ["docker", "inspect", "-f", "{{.State.Running}}", NODE], "true"))
 
 
-def boot_unit_steps(site, head, c):
+def boot_unit_steps(site, head, c, facts, notes):
     """A user unit on the head that re-forms the cluster after a reboot: the
     containers come back on their own (restart policy), the engine processes
-    inside them do not."""
+    inside them do not. Only with linger: without it the user's systemd starts
+    at their first login, not at boot, and stops at their last logout, so the
+    unit would re-form the engine at a login and be killed halfway at a logout."""
     unit = head.home(".config/systemd/user/" + BOOT_UNIT)
+    if facts.get("linger") is not True:
+        notes.append("not re-formed after a reboot: that needs linger (sudo loginctl enable-linger %s), "
+                     "then rack up again" % getpass.getuser())
+        return [run(head, ["systemctl", "--user", "disable", BOOT_UNIT], "no boot unit without linger",
+                    ignore_errors=True, quiet=True),
+                step(head, "remove", "a boot unit from before", path=unit, quiet=True)]
     rack = os.path.join(site.root, "rack")
     content = "\n".join([
         "[Unit]",
@@ -716,6 +729,8 @@ def render(p, out=sys.stdout):
                 s.get("port") and "port %s" % s["port"]]))
         elif k == "record":
             body = "write %s" % s["path"]
+        elif k == "up-already":
+            body = "stop here when %s answers" % s["url"]
         elif k == "remove":
             body = "remove %s" % s["path"]
         else:
@@ -724,6 +739,10 @@ def render(p, out=sys.stdout):
 
 
 # --------------------------------------------------------------- executing --
+class Done(Exception):
+    """A step found the work already done: the plan stops, successfully."""
+
+
 class Executor:
     def __init__(self, site, plan, out=sys.stdout):
         self.site, self.plan, self.out = site, plan, out
@@ -752,10 +771,15 @@ class Executor:
         return r
 
     def execute(self):
-        for s in self.plan["steps"]:
-            if not s.get("quiet"):
-                self.say("== %s%s" % (s["what"], "" if self.node(s).local else " (%s)" % s["node"]))
-            getattr(self, "do_" + s["kind"].replace("-", "_"))(s)
+        try:
+            for s in self.plan["steps"]:
+                if not s.get("quiet"):
+                    self.say("== %s%s" % (s["what"], "" if self.node(s).local else " (%s)" % s["node"]))
+                getattr(self, "do_" + s["kind"].replace("-", "_"))(s)
+        except Done as e:
+            self.say("== %s" % e)
+            return False
+        return True
 
     # ---- kinds
     def do_run(self, s):
@@ -763,6 +787,10 @@ class Executor:
         r = self.sh(n, s["argv"], capture=s.get("quiet", False) or s.get("fail") is not None)
         if r.returncode != 0 and not s.get("ignore_errors"):
             raise PlanError(s.get("fail") or "%s failed on %s (exit %d)" % (shell(s["argv"]), n.name, r.returncode))
+
+    def do_up_already(self, s):
+        if healthy(s["url"]):
+            raise Done("the engine already answers (%s): nothing to re-form" % s["url"])
 
     def do_free(self, s):
         n = self.node(s)

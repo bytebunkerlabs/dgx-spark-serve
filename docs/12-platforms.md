@@ -211,7 +211,10 @@ engine.
   the same image on every node (`rack build` ships it); the shards on every node;
   workers launched before the head; all detached. A systemd user unit on the
   head re-forms it after a reboot (`rack up --boot`, which waits for the
-  workers); it needs linger: `sudo loginctl enable-linger $USER`.
+  workers, and does nothing while the engine answers). It is installed only
+  with linger (`sudo loginctl enable-linger $USER`, then `rack up` again):
+  without it the user's systemd starts at a login rather than at boot, so the
+  containers come back after a reboot but the engine waits for a `rack up`.
 - **llama.cpp, natively** (mac, windows, linux): the pinned build b11430 from
   ggml-org's releases, verified by sha256 and unpacked under
   `~/.local/state/dgx-serve/engines/`. CUDA builds come with their cudart bundle
