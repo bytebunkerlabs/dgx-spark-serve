@@ -173,7 +173,7 @@ class New(Base):
         self.assertEqual(c.returncode, 0, c.stdout)          # unanswered is a warning, not an error
         self.assertIn("unanswered FILL_ME", c.stdout)
         up = m.rack("up", "tiny", "--plan", root=root)
-        self.assertEqual(up.returncode, 0, up.stderr)
+        self.assertIn("still has FILL_ME in ARTIFACT, SERVE_ARGS: answer its questions first", up.stderr)
 
     def test_adding_variants(self):
         m = self.machine(dgx_spark)
@@ -215,7 +215,7 @@ class New(Base):
         self.assertIn("R  recipes/phase2-gpt-oss-120b-solo.env -> recipes/phase2-gpt-oss-120b-solo/dgx.env", st)
         # it still serves on Linux, from the same flags
         p = rack_json(m.rack("up", "phase2-gpt-oss-120b-solo", "--plan", "--json", root=root))
-        self.assertEqual((p["platform"], p["model"], p["topology"]), ("linux", "openai/gpt-oss-120b", "solo"))
+        self.assertEqual((p["platform"], p["model"], len(p["nodes"])), ("linux", "openai/gpt-oss-120b", 1))
         self.assertTrue(p["variant"].endswith("/linux.env"))
         c = m.rack("recipes", "check", "phase2-gpt-oss-120b-solo", root=root)
         self.assertIn("0 errors", c.stdout)

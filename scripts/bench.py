@@ -18,6 +18,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import statistics
 import subprocess
 import time
@@ -32,6 +33,15 @@ DEFAULT_PROMPT = (
 )
 
 
+
+def api_key():
+    """The engine's key (rack init writes it; RACK_API_KEY_FILE says where), or
+    a placeholder for an engine that takes none."""
+    try:
+        return open(os.environ["RACK_API_KEY_FILE"]).read().strip() or "none"
+    except (KeyError, OSError):
+        return "none"
+
 def one_run(url, model, prompt, max_tokens, timeout):
     body = {
         "model": model,
@@ -44,7 +54,7 @@ def one_run(url, model, prompt, max_tokens, timeout):
     req = urllib.request.Request(
         url.rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer none"},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + api_key()},
     )
     t0 = time.perf_counter()
     tfirst = tlast = None

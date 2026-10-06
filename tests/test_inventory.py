@@ -376,14 +376,14 @@ class Commands(Base):
         m.dotenv("WORKER_SSH=\n")
         self.ok(self.script(m, "stop-cluster.sh"))
         self.assertEqual(m.log("ssh"), [])
-        self.assertEqual([l for l in m.log("docker") if not l.startswith("info")], ["stop serve_node serve_solo"])
+        self.assertEqual([l for l in m.log("docker") if not l.startswith("info")], ["rm -f serve_node serve_solo"])
 
     def test_stop_reaches_every_worker(self):
         m, ws = self.two_workers()
         self.ok(self.script(m, "stop-cluster.sh"))
         self.assertEqual([l.split(" docker ")[0].split()[-1] for l in m.log("ssh")], ["admin@s2", "admin@s3"])
         for w in ws:
-            self.assertEqual([l for l in w.log("docker") if not l.startswith("info")], ["stop serve_node"])
+            self.assertEqual([l for l in w.log("docker") if not l.startswith("info")], ["rm -f serve_node"])
 
     def test_build_defaults_to_community_like_rack_build(self):
         m = self.machine(linux_4090x2)

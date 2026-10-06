@@ -236,7 +236,11 @@ rack_resolve_site() {
     fi
   fi
   [ "$IS_HEAD" = 1 ] || HEAD_SSH=${HEAD_SSH:-$LEGACY_HEAD}
-  if [ -z "${HEAD_IP:-}" ] && legacy_rack; then HEAD_IP=$LEGACY_HEAD_IP; fi
+  if [ -z "$head" ] && legacy_rack; then         # the two Sparks' cabling, as measured
+    HEAD_IP=${HEAD_IP:-$LEGACY_HEAD_IP}
+    FABRIC_IF=${FABRIC_IF:-enp1s0f0np0}
+    IB_HCAS=${IB_HCAS:-rocep1s0f0,roceP2p1s0f0}
+  fi
   return 0
 }
 

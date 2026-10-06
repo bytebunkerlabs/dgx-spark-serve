@@ -78,8 +78,8 @@ class Flags(Base):
     def test_no_flag_means_this_machine(self):
         m = self.machine(dgx_spark)
         d = rack_json(m.rack("up", "phase1", "--plan", "--json"))
-        self.assertEqual((d["recipe"], d["platform"], d["model"], d["topology"]),
-                         ("phase1-qwen3-8b", "dgx", "Qwen/Qwen3-8B", "solo"))
+        self.assertEqual((d["recipe"], d["platform"], d["model"], len(d["nodes"])),
+                         ("phase1-qwen3-8b", "dgx", "Qwen/Qwen3-8B", 1))
         self.assertTrue(d["variant"].endswith("/recipes/phase1-qwen3-8b/dgx.env"), d["variant"])
 
     def test_a_flat_recipe_serves_dgx_and_linux_only(self):
@@ -107,7 +107,7 @@ class Flags(Base):
     def test_two_node_recipe_plans_across_the_rack(self):
         m = self.machine(dgx_spark, ips=[("enp1s0f0np0", "192.168.100.1")])
         d = rack_json(m.rack("up", "phase2-gpt-oss-120b", "--plan", "--json"))
-        self.assertEqual((d["topology"], d["where"]), ("cluster", "spark-1 + spark-2"))
+        self.assertEqual([n["name"] for n in d["nodes"]], ["spark-1", "spark-2"])
 
     def test_names_prefixes_and_the_overlay(self):
         m = self.machine(dgx_spark)
@@ -141,7 +141,8 @@ class Flags(Base):
 
     def test_windows_needs_its_own_variant(self):
         m = self.machine(wsl_2070)
-        self.recipe(m, "tiny", dict(TINY, **{"windows.env": '. "$RECIPE_DIR/model.env"\nENGINE=llamacpp\n'}))
+        self.recipe(m, "tiny", dict(TINY, **{"windows.env": '. "$RECIPE_DIR/model.env"\nENGINE=llamacpp\n'
+                                             'ARTIFACT=Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf\n'}))
         self.assertEqual(rack_json(m.rack("up", "tiny", "--plan", "--json"))["variant"].split("/")[-1], "windows.env")
 
 

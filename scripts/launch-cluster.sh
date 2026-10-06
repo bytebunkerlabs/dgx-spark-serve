@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Launch one model TP=2 across the head and its worker. Run ON the head.
+# Launch one model TP=2 across the head and its worker, in the foreground —
+# the manual path, for debugging. rack up is the product path: any number of
+# nodes, detached, re-formed after a reboot (py/serve.py). Run ON the head.
 #   scripts/launch-cluster.sh recipes/<model>.env [--debug]
 #
 # The mechanics, so you can hold the whole thing in your head:
@@ -52,11 +54,13 @@ for m in "${MODS[@]:-}"; do
   [ -z "$m" ] || [ -d "$m" ] || { echo "mod missing: $m (scripts/fetch-inkling-mod.sh?)" >&2; exit 1; }
 done
 
-# Best effort: reclaim page cache on both nodes before a big load. On unified
-# memory, cached file pages and GPU allocations share one pool.
+# Reclaim page cache on both nodes before a big load: on unified memory,
+# cached file pages and GPU allocations share one pool. This silently failing
+# once wedged a rack, so it warns (docs/12-platforms.md: the sudoers drop-in).
 for host in "" "$WORKER_SSH"; do
-  ${host:+ssh "$host"} sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null \
-    || echo "note: could not drop caches ${host:+on $host }(no passwordless sudo) — fine unless memory is tight"
+  ${host:+ssh "$host"} sudo -n /usr/local/sbin/drop-caches 2>/dev/null \
+    || ${host:+ssh "$host"} sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null \
+    || echo "WARN: could not drop caches ${host:+on $host }(no passwordless sudo): docs/12-platforms.md" >&2
 done
 
 # --- helpers -----------------------------------------------------------------
@@ -162,10 +166,13 @@ node_script 0 "$tmpd/head.sh"
 
 echo "== launching worker (rank 1, headless, detached)"
 rsync -q "$tmpd/worker.sh" "$WORKER_SSH:/tmp/serve-launch.sh"
-ssh "$WORKER_SSH" "docker cp /tmp/serve-launch.sh $CTR:/workspace/launch.sh \
+# /workspace is not in every engine image: make it before copying into it.
+ssh "$WORKER_SSH" "docker exec -w / $CTR mkdir -p /workspace \
+  && docker cp /tmp/serve-launch.sh $CTR:/workspace/launch.sh \
   && docker exec -d $CTR bash -c 'bash /workspace/launch.sh >> /proc/1/fd/1 2>&1'"
 
 echo "== launching head (rank 0, foreground) — first boot compiles kernels, be patient"
 echo "   watch the worker with: ssh $WORKER_SSH docker logs -f $CTR"
+docker exec -w / "$CTR" mkdir -p /workspace
 docker cp "$tmpd/head.sh" "$CTR:/workspace/launch.sh"
 docker exec "$CTR" bash -c 'bash /workspace/launch.sh'
