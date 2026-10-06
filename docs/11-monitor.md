@@ -2,7 +2,9 @@
 
 *`rack monitor up` puts a small read-only telemetry service on every node and
 prints one URL. Add that URL and its token to the ByteBunker app (Cluster >
-Add monitor) and the app shows every node, GPU, engine and container from it.*
+Add monitor) and the app shows every node, GPU, engine and container from it.
+On a DGX Spark or NVIDIA Linux it runs in containers on the head and on every
+worker of the inventory; on a Mac or in WSL2 it runs bare, as your user.*
 
 ---
 
@@ -22,8 +24,10 @@ Add monitor) and the app shows every node, GPU, engine and container from it.*
    ByteBunker app / console  ── Cluster screen
 ```
 
-Two containers per node, one image (`rack-monitor:<hash>`, python:3.12-slim
-plus `monitor/rackmon.py`, standard library only):
+Every worker of the inventory (`rack nodes`) gets its own, and the head lists
+them as peers by fabric address. Two containers per node, one image
+(`rack-monitor:<hash>`, python:3.12-slim plus `monitor/rackmon.py`, standard
+library only):
 
 | container | sees | cannot |
 |---|---|---|
@@ -34,14 +38,34 @@ The split is the point: the process that answers the network never holds the
 Docker socket (which is root on the node). The one that holds it has no
 network to be reached through.
 
+## Bare: a Mac, WSL2, or `--bare`
+
+Where Docker cannot run the monitor (a Mac; a machine without a usable Docker)
+or when you ask (`rack monitor up --bare`), `rackmon.py` runs as your user
+straight from the checkout: a launchd agent on a Mac
+(`ai.bytebunker.dgx-serve.monitor`), a systemd user unit elsewhere
+(`rack-monitor.service`, plus `rack-monitor-relay.service` for the container
+list when Docker is usable). Same token, same port, same API, and it restarts
+with the machine (on Linux, with linger: `sudo loginctl enable-linger $USER`).
+A bare monitor runs as the engine's own user, so it may read the engine key for
+a keyed engine's metrics (`MONITOR_ENGINE_KEY_FILE`); it sends the key only to
+the local engine.
+
+On a Mac it reads, without root: per-core CPU from the Mach host statistics,
+memory from `vm_stat` (available = free, inactive, speculative and purgeable
+pages) and `vm.swapusage`, the GPU's own utilisation and memory in use from the
+IORegistry (`IOAccelerator`), throttling from `pmset -g therm`, listening ports
+and interface counters from `netstat`, uptime from `kern.boottime`. A Mac gives
+no per-sensor temperatures without root, so none are reported.
+
 ## Commands
 
 ```bash
-rack monitor up          # build, ship to the worker, (re)start both nodes, print the endpoint
-rack monitor status      # containers, one line per node, the endpoint again
+rack monitor up [--bare] # build, ship to every worker, (re)start, print the endpoint
+rack monitor status      # containers or service, one line per node, the endpoint again
 rack monitor token       # print the token (rack monitor token --rotate: replace it)
-rack monitor logs        # the head's monitor log (logs worker: the worker's)
-rack monitor down        # stop and remove on both nodes; the token stays
+rack monitor logs [<w>]  # the head's monitor log, or a worker's
+rack monitor down        # stop and remove everywhere; the token stays
 ```
 
 `rack monitor up` is idempotent. The image tag is a hash of `rackmon.py` and
@@ -69,6 +93,7 @@ memory from the kernel and per-process GPU allocations from nvidia-smi).
 | disk | `statvfs` | root filesystem used / total |
 | engines | each listening port in `MONITOR_ENGINE_PORTS` (default 8888, 8000, 8001, 8002, 8080, 30000, 11434, 1234) | vLLM, SGLang, llama.cpp from `/metrics`; Ollama from `/api/ps`; anything else OpenAI-shaped from `/v1/models`. Running / waiting requests, KV cache %, KV capacity in tokens, generation and prompt tokens per second (10 s window), TTFT p50 / p95, end-to-end latency and decode-step latency, prefix-cache hit rate (60 s window), preemptions, served model ids and context length. With speculative decoding (MTP, EAGLE, n-gram) also tokens per decode step and the share of drafted tokens kept: one step can emit several tokens, so step latency is not per-token latency |
 | containers | the relay's file + cgroup v2 | name, image, state, status, compose project, CPU cores in use, memory |
+| serving | `rack up`'s record (`~/.local/state/dgx-serve/serving.json`) | recipe, model, served name, engine, runtime, port, nodes, roles, dialect, context, tools, reasoning, vision, speculative decoding, whether a key is required, since when. The engine on that port is found even when its probes need the key |
 | history | ring buffer in the monitor | 15 minutes at 2 s: CPU, memory, GPU, temperature, power, tokens/s, KV %, fabric / LAN / tailnet bytes |
 
 Only listening ports on that list are probed, and only with `GET`: the
@@ -104,17 +129,17 @@ The head's monitor binds `0.0.0.0:9177` on the host network (`MONITOR_BIND`
 to narrow it). The worker's binds only its fabric address and loopback: the head
 is the only thing that asks it. On this rack that means:
 
-| path | state | why |
+| path | state on a Spark with ufw | why |
 |---|---|---|
-| tailnet `http://100.90.164.11:9177`, `http://burhan.tailed338.ts.net:9177` | open | ufw allows `tailscale0` |
-| fabric `192.168.100.x:9177` | open | how the head reaches the worker (the worker listens nowhere else) |
-| LAN `http://172.16.25.186:9177` | closed | ufw drops it. LiteLLM's :4000 is open on the LAN only because Docker-published ports bypass ufw; a host-network service does not |
+| tailnet `http://<head's tailnet address>:9177` | open | ufw allows `tailscale0` |
+| fabric `<worker's fabric address>:9177` | open | how the head reaches a worker (a worker listens nowhere else) |
+| LAN `http://<head's LAN address>:9177` | closed | ufw drops it. A gateway on :4000 may be open on the LAN only because Docker-published ports bypass ufw; a host-network service does not |
 
 `rack monitor up` tests the LAN path from the worker and prints the exact rule
 when it is closed. Opening it is your call (it needs sudo):
 
 ```bash
-sudo ufw allow from 172.16.25.0/24 to any port 9177 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 9177 proto tcp    # your LAN
 ```
 
 ## Configuration
@@ -127,24 +152,27 @@ sudo ufw allow from 172.16.25.0/24 to any port 9177 proto tcp
 | `MONITOR_BIND` | 0.0.0.0 | the head's listen addresses, comma-separated |
 | `MONITOR_CLUSTER` | rack | the name the app shows |
 | `MONITOR_ENGINE_PORTS` | 8888,8000,8001,8002,8080,30000,11434,1234 | where engines may listen |
-| `WORKER_IP` | 192.168.100.2 | the worker's fabric address, which the head polls |
+| `MONITOR_WAIT_S` | 30 | how long `up` waits for the first samples |
 
-Inside the container (set by `rack monitor up`): `MONITOR_NAME`,
-`MONITOR_ROLE`, `MONITOR_PEERS` (`name=http://ip:port,...`), `MONITOR_SAMPLE_S`
-(2), `MONITOR_TOKEN_FILE`, `MONITOR_STATE_DIR`.
+The workers and their fabric addresses come from the inventory (`rack nodes`).
 
-## Running it somewhere else
+Inside the container or the bare service (set by `rack monitor up`):
+`MONITOR_NAME`, `MONITOR_ROLE`, `MONITOR_PEERS` (`name=http://ip:port,...`),
+`MONITOR_SAMPLE_S` (2), `MONITOR_TOKEN_FILE`, `MONITOR_STATE_DIR`,
+`MONITOR_SERVING` (rack up's record), and bare only `MONITOR_ENGINE_KEY_FILE`.
 
-`rackmon.py` is one file with no dependencies, so any Linux box can run it
-bare (the agents worker, a gaming PC under WSL2):
+## Running it by hand
+
+`rackmon.py` is one file with no dependencies, so it also runs by hand on any
+Linux box or Mac:
 
 ```bash
-MONITOR_TOKEN_FILE=~/.config/rack/monitor.token MONITOR_NAME=leagueofash \
-  python3 monitor/rackmon.py serve
+MONITOR_TOKEN_FILE=~/.config/rack/monitor.token MONITOR_NAME=pc python3 monitor/rackmon.py serve
+python3 monitor/rackmon.py once        # one snapshot of this machine, pretty
 ```
 
-Without the relay it reports no containers and says so. Add it to the head's
-peers with `MONITOR_PEERS` or as its own monitor in the app.
+Without the relay it reports no containers and says so. Add it to the app as
+its own monitor.
 
 ## Debugging
 
@@ -159,5 +187,6 @@ python3 -m unittest monitor/test_rackmon.py -v                                  
 | `containers_error: docker relay not running` | `rack-monitor-docker` stopped | `rack monitor up` |
 | worker shows `peer answered HTTP 401 (token mismatch)` | tokens differ | `rack monitor up` copies the head's token to the worker |
 | worker shows `timed out` | worker monitor down, or the fabric is | `rack monitor status`; `rack preflight` |
-| no engines listed while one serves | port not in `MONITOR_ENGINE_PORTS` | add it in `.env`, `rack monitor up` |
+| no engines listed while one serves | port not in `MONITOR_ENGINE_PORTS`, and not rack up's | add it in `.env`, `rack monitor up` |
+| bare: `not running` after a reboot (Linux) | no linger | `sudo loginctl enable-linger $USER` |
 | app says unauthorized | token pasted with a newline or an old token | `rack monitor token`, paste again |

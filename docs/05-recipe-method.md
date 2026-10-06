@@ -191,14 +191,18 @@ tuning it and breaking it.
 
 ```
 rack fit  <org/model>          # question 1 — before anything else
-rack new  <name> <org/model>   # scaffold from recipes/TEMPLATE.env
+rack new  <name> <org/model>   # recipes/<name>/: model.env + this platform's file (--mac, ...)
                                # answer 2-7 in the file, in order
 rack pull <org/model>
 rack up   <name>
 rack bench <name>              # question 8
 ```
 
-The template is `recipes/TEMPLATE.env`. It is the eight questions with the
-evidence slots left blank. Copy it; do not start from a blank file, and do not
+The templates are `recipes/TEMPLATE.env` (a vLLM variant: DGX Spark, NVIDIA
+Linux) and `recipes/TEMPLATE-llamacpp.env` (a llama.cpp variant: Mac, Windows).
+Each is the eight questions with the evidence slots left blank; `rack new` puts
+the model's own answers (question 3, and the per-request half of 5) in the
+recipe's `model.env`, shared by every platform. `rack recipes check` says what a
+recipe may contain (docs/12-platforms.md). Copy it; do not start from a blank file, and do not
 start from a recipe for a different model — inherited flags whose reasons no
 longer apply are the most expensive kind.

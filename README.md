@@ -1,58 +1,87 @@
-# dgx-spark-serve
+# dgx-serve
 
-The serving layer for a two-Spark cluster, built from parts you can read.
+Serve open models on your own machines: a DGX Spark (or several, as one model),
+a Linux box with NVIDIA GPUs, a Windows PC through WSL2, or an Apple Silicon Mac.
+One command, `rack`, on every one of them; the ByteBunker app on top.
 
-This repo replaces the community toolkits (MiaAI-Lab's dspark-toolkit, eugr/spark-vllm-docker)
-with our own minimal equivalent: one Dockerfile, a handful of scripts, and runbooks that explain
-every flag. It is deliberately two-nodes-only, no generality — the point is to understand each
-layer well enough to change it, then make it fast.
-
-Host preparation (Docker, firewall, monitoring, overlay network) lives in
-[bytebunkerlabs/dgx-spark-setup](https://github.com/bytebunkerlabs/dgx-spark-setup). This repo
-starts where that ends: the fabric is validated, the boxes are clean, and we own everything from
-the container up.
+It started as the serving layer for a two-Spark cluster, built from parts you
+can read: one Dockerfile, a handful of scripts, and runbooks that explain every
+flag. 1.0 keeps that and carries it to the other platforms: llama.cpp natively
+where vLLM does not fit, one recipe name for every platform, and an inventory
+instead of a hard-wired pair of Sparks.
 
 ## The `rack` command
 
-One CLI instead of remembering script paths:
+```bash
+git clone https://github.com/bytebunkerlabs/dgx-spark-serve.git ~/dgx-serve
+cd ~/dgx-serve && ./rack install     # rack on your PATH
+rack init                            # what this machine is, and what serving here needs
+```
+
+```
+rack init                     detect this machine, write the inventory, check what serving needs
+rack platform [--json]        dgx, linux, windows (WSL2) or mac; GPUs; memory for models
+rack nodes [add|rm|test]      the machines of this rack: workers on the fabric, other servers
+rack recipes [--<platform>]   recipes and the platforms they serve on (on a platform: what fits)
+rack recipes check            what a recipe may contain, checked before anything sources it
+rack new <name> <hf-id>       scaffold a recipe for this platform (--mac, --windows, ...)
+rack fit <recipe|hf-id>       will it fit this machine? the hub's numbers, this platform's budget
+rack pull <recipe|hf-id>      download exactly what the variant serves, verified; replicate to workers
+rack up <recipe>              serve it, detached; returns when healthy (--plan shows every step)
+rack status                   what is serving, the API, the monitor
+rack logs [-f] [<node>]       the engine's log
+rack chat "hello"             one completion, with the engine key
+rack bench [label]            measure whatever is serving
+rack down                     stop it, everywhere it runs
+rack monitor up [--bare]      telemetry for every node behind one endpoint, for the app
+rack gateway [sync|...]       a LiteLLM route per serving recipe, when the site has a gateway
+rack version [--json]         versions and schemas, for the app
+```
+
+`pull`, `up`, `fit`, `recipes` and `new` take a platform flag (`--dgx`,
+`--linux`, `--windows`, `--mac`; default: this machine's) and refuse one this
+machine cannot honour, with the fix. `--plan` shows what would run, on any
+machine. Any command but `init` and `nodes` takes `--on <node>` to run on another
+machine of the inventory. [docs/12-platforms.md](docs/12-platforms.md) is the
+reference: platforms, the inventory, recipes, the engine key, every setting.
+
+A model on a Mac, start to finish:
 
 ```bash
-./rack install          # symlinks into ~/.local/bin (or /usr/local/bin)
-rack --help
+rack fit qwen3-8b          # the 5.0 GB Q4_K_M file: does it fit, and how long a window
+rack up qwen3-8b           # pulls the pinned GGUF and llama.cpp build, serves under launchd
+rack chat "hello"
+rack monitor up            # then add the printed URL and token in the app
 ```
 
-```
-rack fit <hf-id>        will it fit? asks HuggingFace, does the arithmetic
-rack pull <hf-id>       download, replicate to the worker, verify shards
-rack new <name> <hf-id> scaffold a recipe you can edit
-rack up <recipe>        launch — solo or TP=2, whichever the recipe says
-rack status             containers, memory, API health, both nodes
-rack logs [-f] [worker] engine logs
-rack bench [label]      measure whatever is running
-rack chat "hello"       one-shot completion
-rack down               stop everything
-rack monitor up         telemetry for every node behind one endpoint, for the app
-```
-
-A new model, start to finish:
+The same on two Sparks, one model across both:
 
 ```bash
-rack fit deepseek-ai/DeepSeek-V4-Flash-0731     # 167 GB, needs both nodes
-rack pull deepseek-ai/DeepSeek-V4-Flash-0731    # download + replicate + verify
-rack new dsv4 deepseek-ai/DeepSeek-V4-Flash-0731
-rack up dsv4 --debug
+rack init                                       # on the head
+rack nodes add spark-2 --fabric 192.168.100.2   # the worker
+rack preflight                                  # fabric, RDMA, firewall, on every node
+rack fit deepseek-ai/DeepSeek-V4-Flash-0731     # does it need both?
+rack up dsv4                                    # pull, replicate, verify, TP=2, detached
 rack bench dsv4-baseline
 ```
 
-`rack fit` asks HuggingFace for the real shard sizes and the config's MoE
-geometry, then checks them against your `.env` — so you find out a model
-won't fit *before* the 167 GB download, not after.
+`rack fit` asks Hugging Face for the real file sizes, the parameter count and
+the KV cache per token, then checks them against this machine's budget, so you
+find out a model won't fit *before* the download, not after.
 
-## Quickstart
+## The two-Spark rack
+
+What follows is the rack this project was built on and measured with: two DGX
+Sparks on a 200 Gb/s fabric. Host preparation (Docker, firewall, monitoring,
+overlay network) lives in
+[bytebunkerlabs/dgx-spark-setup](https://github.com/bytebunkerlabs/dgx-spark-setup).
+
+### Quickstart
 
 Two DGX Sparks, cabled and validated ([host prep here](https://github.com/bytebunkerlabs/dgx-spark-setup)).
 Everything below runs **on spark-1** unless labelled otherwise. These are the
-underlying scripts; `rack` above wraps them.
+underlying scripts, in the foreground, for debugging; `rack` above wraps them
+and runs engines detached.
 
 ```bash
 # 0. get the repo on both nodes, at the same path
@@ -146,8 +175,24 @@ Full walkthrough with the reasoning behind each flag: [`docs/`](docs/) —
 ## Layout
 
 ```
-Dockerfile              the one image both nodes run
-.env.example            every knob, commented; copy to .env
+rack                    the command; its parts live in lib/ (bash 3.2) and py/ (stdlib Python 3.9)
+lib/
+  platform.sh           what this machine is (rack platform)
+  inventory.sh          the machines of the rack, and who is the head
+  nodes.sh              rack init, rack nodes
+  flags.sh              --dgx/--linux/--windows/--mac, --plan, --on
+  recipe.sh             finding a recipe and its variant
+  gateway.sh            rack gateway
+py/
+  serve.py              rack up / rack down: the plan, then running it
+  engines.py            the pinned engines (llama.cpp b11430, vLLM)
+  recipes.py            rack recipes, rack recipes check
+  hfget.py, fetch.py    the Hugging Face downloader
+  fit.py, rackfit.py    rack fit
+  gateway.py            the LiteLLM route editor
+tests/                  python3 -m unittest discover -s tests (fake machines, no hardware)
+Dockerfile              the one image the Sparks run
+.env.example            every knob, commented; copy to ~/.config/dgx-serve/rack.env
 scripts/
   preflight.sh          read-only sanity check — run on both nodes before anything
   gid-index.sh          resolve the RoCE v2 GID index from hardware (never store it)
@@ -157,9 +202,10 @@ scripts/
   launch-solo.sh        one node, one model
   launch-cluster.sh     TP=2 across both nodes (worker first, then head)
   stop-cluster.sh
+  memwatch.sh           memory-pressure watchdog beside a Spark engine
 monitor/
-  rackmon.py            the monitor: one stdlib file (serve | docker-relay | once)
-  rack-monitor.sh       rack monitor up|down|status|token|logs
+  rackmon.py            the monitor: one stdlib file (serve | docker-relay | once); Linux and macOS
+  rack-monitor.sh       rack monitor up [--bare]|down|status|token|logs
   Dockerfile            python:3.12-slim + rackmon.py
   test_rackmon.py       python3 -m unittest monitor/test_rackmon.py
 docs/
@@ -169,7 +215,8 @@ docs/
   03-inkling.md         phase 3 runbook — the capstone
   04-tuning.md          phase 4 — the performance program
   11-monitor.md         rack monitor: what it measures, the API, reaching it
-recipes/                one env file per model = one reviewed serving profile
+  12-platforms.md       dgx-serve 1.0: platforms, inventory, recipes, serving, settings
+recipes/                a folder per model, a file per platform (TEMPLATE*.env scaffold them)
 bench/results.jsonl     the lab notebook — committed, append-only
 ```
 
@@ -191,8 +238,9 @@ Phase 2 deliberately uses a model that fits on one node — that makes the cost 
 
 ## Conventions
 
-- `spark-1` = head, `192.168.100.1` on the fabric — the box you type on.
-  `spark-2` = worker, `192.168.100.2`. Second rail: same boxes, `192.168.101.x`.
+- On the two-Spark rack, `spark-1` = head, `192.168.100.1` on the fabric — the box
+  you type on. `spark-2` = worker, `192.168.100.2`. Second rail: same boxes,
+  `192.168.101.x`. Elsewhere the inventory (`rack nodes`) names the machines.
 - The HF cache lives at `~/dgx/hf` at an **identical absolute path on both nodes**.
 - Every runbook command is labelled **on spark-1**, **on spark-2**, or **on both**.
 - Scripts are idempotent and safe to re-run unless a runbook says otherwise.

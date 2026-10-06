@@ -1,5 +1,14 @@
 # How rack works — pull to death
 
+> **Before 1.0.** This describes `rack` as it drove the two-Spark rack before
+> dgx-serve 1.0: `rack up` held the foreground, one fixed worker, flat recipe
+> files, `rack logs` reading a launch log. Since 1.0 engines run detached
+> (`rack up` returns when healthy; `rack down` stops them), the inventory names
+> the machines, recipes are a folder per model with a file per platform, and
+> Macs and Windows serve too: [docs/12-platforms.md](12-platforms.md). What this
+> page says about the fabric, NCCL, the images, memory and the recipe method
+> still holds.
+
 *The whole path: an org/model string on Hugging Face, to bytes on two disks, to
 a container holding a model in unified memory, to a number in a JSONL file, to
 nothing left running.*
