@@ -616,6 +616,7 @@ def serving_record(site, p, c):
             "context": d.get("context"), "tools": d.get("tools"), "reasoning": d.get("reasoning"),
             "vision": d.get("vision"), "speculative": d.get("speculative"), "image": p.get("image"),
             "engine_build": p.get("engine_build"), "log": p.get("log"), "rack_version": site.version,
+            "gateway_name": c["v"].get("GATEWAY_NAME") or None,
             "started_at": None}
 
 

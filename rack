@@ -32,6 +32,7 @@ cd "$ROOT"
 . "$ROOT/lib/nodes.sh"
 . "$ROOT/lib/flags.sh"
 . "$ROOT/lib/recipe.sh"
+. "$ROOT/lib/gateway.sh"
 RACK_ROOT=$ROOT
 load_site_env
 SITE_IMAGE=${IMAGE:-}                        # the site's image, if it named one (else per platform)
@@ -109,6 +110,8 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, every node
   rack scrub [--delete]       every trace a video run leaves: list, or wipe
+  rack gateway [status|sync|remove <name>|adopt <name>]
+                              a LiteLLM route per serving recipe, when GATEWAY_CONFIG is set
   rack monitor up [--bare]|down|status|token|logs
                               telemetry for every node behind one endpoint; bare (no Docker)
                               on a Mac or WSL2 (docs/11-monitor.md)
@@ -509,13 +512,21 @@ cmd_up() {
   local pf=(); [ "$PLAN" = 1 ] && pf+=(--plan); [ "$JSON" = 1 ] && pf+=(--json)
   RACK_DEBUG=$debug serve_py up --recipe-name "$RECIPE_NAME" --recipe-file "$f" --recipe-dir "$RECIPE_DIR" \
     --platform "$TARGET_PLATFORM" --facts "$(platform_json)" ${replace:+"$replace"} ${boot:+"$boot"} \
-    ${pf[@]+"${pf[@]}"}
+    ${pf[@]+"${pf[@]}"} || return 1
+  # A route on the site's gateway, when it has one; serving goes on without it.
+  if [ "$PLAN" != 1 ] && gateway_on; then
+    gateway_sync || warn "gateway: the model serves, but LiteLLM has no route to it (rack gateway sync)"
+  fi
 }
 
 cmd_down() {
   flags_parse "$@"
   [ ${#REST[@]} -eq 0 ] || die "usage: rack down [--plan [--json]] [--on <node>]"
   [ "$PLAN" = 1 ] || [ "$IS_HEAD" = 1 ] || die "rack down runs on the machine that serves: rack down --on $HEAD_LABEL"
+  # the route goes first: a gateway listing a stopped model is how lists rot
+  if [ "$PLAN" != 1 ] && gateway_on; then
+    gateway_remove || warn "gateway: could not remove the route (rack gateway remove <name>)"
+  fi
   platform_detect
   local pf=(); [ "$PLAN" = 1 ] && pf+=(--plan); [ "$JSON" = 1 ] && pf+=(--json)
   serve_py down ${pf[@]+"${pf[@]}"}
@@ -812,6 +823,7 @@ case "${1:-}" in
   bench)     shift; cmd_bench "$@" ;;
   chat)      shift; cmd_chat "$@" ;;
   monitor)   shift; monitor_env exec "$ROOT/monitor/rack-monitor.sh" "$@" ;;
+  gateway)   shift; cmd_gateway "$@" ;;
   install)   shift; cmd_install "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (rack --help)" ;;

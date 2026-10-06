@@ -27,7 +27,7 @@ FLAT_PLATFORMS = ["dgx", "linux"]
 ENGINES = ["vllm", "llamacpp"]
 ROLES = ["chat", "tools", "reasoning", "vision", "code", "embedding", "rerank", "draft"]
 SCALARS = ["MODEL", "MODEL_REVISION", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
-           "ROLES", "WEIGHTS_GB", "SERVED_NAME"]
+           "ROLES", "WEIGHTS_GB", "SERVED_NAME", "GATEWAY_NAME"]
 ARRAYS = ["SERVE_ARGS", "ENV_EXTRA", "MODS"]
 OWNED_FLAGS = ["--host", "--port", "--api-key", "--api-key-file"]
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
