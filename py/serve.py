@@ -375,7 +375,7 @@ def memwatch_steps(site, nodes, container):
 
 
 def wait_step(site, h, port, logs, alive, alive_value, timeout=3600):
-    return step(h, "wait", "healthy", url="http://127.0.0.1:%d/health" % port, logs=logs,
+    return step(h, "wait", "wait until it answers", url="http://127.0.0.1:%d/health" % port, logs=logs,
                 alive=alive, alive_value=alive_value, timeout=timeout)
 
 
@@ -505,10 +505,16 @@ def plan_native(site, p, c, facts, runtime, replace):
     steps = p["steps"]
     log = os.path.join(site.state, "logs", "engine.log")
     p["log"] = log
+    uid = str(os.getuid())
     if runtime == "launchd":
-        steps.append(step(h, "free", "nothing else serving here", launchd=LABEL, replace=replace, port=c["port"]))
+        if replace:                                # stop rack's own engine, and only that, first
+            steps += launchd_stop(h, uid)
+        steps.append(step(h, "free", "nothing else serving here", launchd=LABEL, port=c["port"]))
     else:
-        steps.append(step(h, "free", "nothing else serving here", systemd=UNIT, replace=replace, port=c["port"]))
+        if replace:
+            steps.append(run(h, ["systemctl", "--user", "stop", UNIT], "stop the engine rack started before",
+                             ignore_errors=True, quiet=True))
+        steps.append(step(h, "free", "nothing else serving here", systemd=UNIT, port=c["port"]))
     env = {}
     for kv in v.get("ENV_EXTRA", []):
         if kv and "=" in kv:
@@ -560,10 +566,8 @@ def plan_native(site, p, c, facts, runtime, replace):
             "ThrottleInterval": 10, "ProcessType": "Interactive",
             "StandardOutPath": log, "StandardErrorPath": log,
             "EnvironmentVariables": env}).decode()
-        uid = str(os.getuid())
         steps.append(step(h, "write", "the launchd job", path=plist, content=content, resolve_revision=True))
-        steps.append(run(h, ["launchctl", "bootout", "gui/%s/%s" % (uid, LABEL)], "the job's previous run",
-                         ignore_errors=True, quiet=True))
+        steps += launchd_stop(h, uid)            # a job loaded but not running is still in the way
         steps.append(run(h, ["launchctl", "bootstrap", "gui/" + uid, plist], "start it, now and at every login"))
         alive = ["launchctl", "print", "gui/%s/%s" % (uid, LABEL)]
         steps.append(wait_step(site, h, c["port"], ["tail", "-n", "20", "-F", log], alive, None))
@@ -588,6 +592,16 @@ def plan_native(site, p, c, facts, runtime, replace):
         steps.append(run(h, ["systemctl", "--user", "restart", UNIT], "start it now"))
         steps.append(wait_step(site, h, c["port"], ["tail", "-n", "20", "-F", log],
                                ["systemctl", "--user", "is-active", UNIT], "active"))
+
+
+def launchd_stop(h, uid):
+    """Unload the engine's job; bootout returns before it is gone, and
+    bootstrapping over a job on its way out fails, so wait for it."""
+    return [run(h, ["launchctl", "bootout", "gui/%s/%s" % (uid, LABEL)], "the job's previous run",
+                ignore_errors=True, quiet=True),
+            run(h, ["sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print gui/%s/%s >/dev/null 2>&1 "
+                                "|| exit 0; sleep 0.5; done" % (uid, LABEL)],
+                "the previous run is gone", ignore_errors=True, quiet=True)]
 
 
 def serving_record(site, p, c):
@@ -747,11 +761,11 @@ class Executor:
             busy += sorted(running & set(s["containers"]))
             r = self.sh(n, ["docker", "ps", "--filter", "label=" + s["label"], "--format", "{{.Names}}"])
             busy += sorted(set((r.stdout or "").split()) - set(busy))
-        if s.get("launchd") and not s.get("replace"):
+        if s.get("launchd"):
             r = self.sh(n, ["launchctl", "print", "gui/%d/%s" % (os.getuid(), s["launchd"])])
             if r.returncode == 0 and "state = running" in (r.stdout or ""):
                 busy.append("launchd job %s" % s["launchd"])
-        if s.get("systemd") and not s.get("replace"):
+        if s.get("systemd"):
             r = self.sh(n, ["systemctl", "--user", "is-active", s["systemd"]])
             if (r.stdout or "").strip() in ("active", "activating"):
                 busy.append("unit %s" % s["systemd"])

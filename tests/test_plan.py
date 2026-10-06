@@ -96,7 +96,7 @@ class Plans(Base):
         self.assertEqual((p["platform"], p["engine"], p["runtime"], p["host"], p["port"], p["memory_cap_gb"]),
                          ("mac", "llamacpp", "launchd", "0.0.0.0", 8888, None))
         self.assertEqual([s["kind"] for s in p["steps"]],
-                         ["free", "install", "weights", "run", "write", "run", "run", "wait", "record"])
+                         ["free", "install", "weights", "run", "write", "run", "run", "run", "wait", "record"])
         inst = steps(p, "install")[0]
         self.assertEqual(inst["assets"][0]["url"],
                          "https://github.com/ggml-org/llama.cpp/releases/download/b11430/llama-b11430-bin-macos-arm64.tar.gz")
@@ -335,7 +335,9 @@ class Execute(Base):
         r = m.rack("up", "qwen3-8b", extra_env=self.env())
         self.assertIn("mini is already serving (launchd job ai.bytebunker.dgx-serve.engine)", r.stderr)
         m.logging_cmd("launchctl", 'case "$1" in print) [ -f "$HOME/loaded" ] && echo "state = running" || exit 113;; '
-                                   'bootstrap) touch "$HOME/loaded"; %s;; bootout) rm -f "$HOME/loaded";; esac' % ENGINE)
+                                   'bootstrap) touch "$HOME/loaded"; %s;; '
+                                   'bootout) rm -f "$HOME/loaded"; kill "$(cat "$HOME/engine.pid" 2>/dev/null)" 2>/dev/null; '
+                                   'sleep 0.3;; esac' % ENGINE)
         env = self.env()
         r = m.rack("up", "qwen3-8b", extra_env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -343,6 +345,12 @@ class Execute(Base):
         job = plistlib.load(open(plist, "rb"))
         self.assertEqual(job["ProgramArguments"][0], server)
         self.assertIn("bootstrap gui/%d %s" % (os.getuid(), plist), m.log("launchctl"))
+        # --replace stops rack's own engine first, then starts the new one
+        r = m.rack("up", "qwen3-8b", "--replace", extra_env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = m.log("launchctl")
+        self.assertLess(len(calls) - 1 - calls[::-1].index("bootout gui/%d/ai.bytebunker.dgx-serve.engine" % os.getuid()),
+                        len(calls) - 1 - calls[::-1].index("bootstrap gui/%d %s" % (os.getuid(), plist)))
         r = m.rack("down", extra_env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(plist))
