@@ -20,7 +20,7 @@ BASH = "/bin/bash"
 TOOLS = ["awk", "sed", "tr", "cut", "head", "tail", "cat", "grep", "sort", "uniq", "wc", "date", "tar",
          "mkdir", "mv", "rm", "cp", "dirname", "basename", "ls", "find", "env", "readlink", "chmod",
          "ln", "mktemp", "touch", "sleep", "seq", "id", "python3", "bash", "sh", "tee", "printf",
-         "true", "false", "test", "expr", "od", "xargs", "comm", "diff", "stat", "df"]
+         "true", "false", "test", "expr", "od", "xargs", "comm", "diff", "stat", "df", "git"]
 
 
 class FakeMachine:
@@ -122,9 +122,25 @@ class FakeMachine:
         return subprocess.run([BASH, "-c", prelude + snippet], cwd=cwd, env=self.env(extra_env),
                               capture_output=True, text=True, timeout=60)
 
-    def rack(self, *args, extra_env=None, cwd=ROOT):
-        return subprocess.run([BASH, os.path.join(ROOT, "rack")] + list(args), cwd=cwd,
+    def rack(self, *args, extra_env=None, cwd=ROOT, root=ROOT):
+        return subprocess.run([BASH, os.path.join(root, "rack")] + list(args), cwd=cwd,
                               env=self.env(extra_env), capture_output=True, text=True, timeout=120)
+
+    def checkout(self, git=False):
+        """A private copy of the checkout, for commands that write into it."""
+        dst = os.path.join(self.dir, "checkout")
+        for part in ("rack", "lib", "py", "scripts", "recipes", "monitor"):
+            src = os.path.join(ROOT, part)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(dst, part), ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                os.makedirs(dst, exist_ok=True)
+                shutil.copy2(src, os.path.join(dst, part))
+        if git:
+            g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", dst]
+            for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"]):
+                subprocess.run(g + cmd, check=True, capture_output=True)
+        return dst
 
 
 SSH_FAKE = r'''

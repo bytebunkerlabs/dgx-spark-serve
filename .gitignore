@@ -3,3 +3,4 @@
 .DS_Store
 bench/*.tmp
 sequences/*/
+__pycache__/

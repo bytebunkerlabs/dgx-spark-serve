@@ -308,8 +308,20 @@ is_tp2() {
   local f=$1 depth=${2:-0} parent
   [ "$depth" -gt 4 ] && return 1
   grep -qE '^[[:space:]]*--tensor-parallel-size[[:space:]]+2([[:space:]]|$)' "$f" && return 0
-  parent=$(sed -n 's|^\. *\(recipes/[^ ]*\.env\).*|\1|p' "$f" | head -1)
+  parent=$(recipe_parent "$f")
   [ -n "$parent" ] && [ -e "$parent" ] && is_tp2 "$parent" $((depth + 1))
+}
+
+# The file a recipe sources, other than its model.env: a flat parent
+# (`. recipes/parent.env`) or a sibling variant (`. "$RECIPE_DIR/dgx.env"`).
+recipe_parent() {
+  local p
+  p=$(sed -n 's|^\. *\(recipes/[^ ]*\.env\).*|\1|p' "$1" | head -1)
+  [ -n "$p" ] && { printf '%s' "$p"; return; }
+  # shellcheck disable=SC2016  # $RECIPE_DIR is the text being matched
+  p=$(sed -n 's|^\. *"\$RECIPE_DIR/\([A-Za-z0-9._-]*\.env\)".*|\1|p' "$1" | grep -v '^model\.env$' | head -1 || true)
+  [ -n "$p" ] && printf '%s/%s' "$(dirname "$1")" "$p"
+  return 0
 }
 
 # MODEL= of a recipe, following `. recipes/parent.env` inheritance. A variant
@@ -323,54 +335,163 @@ recipe_model() {
   # a v2 variant: what it shares is in its folder's model.env
   [ "$(basename "$f")" != model.env ] && [ -f "$(dirname "$f")/model.env" ] \
     && { recipe_model "$(dirname "$f")/model.env" $((depth + 1)); return; }
-  parent=$(sed -n 's|^\. *\(recipes/[^ ]*\.env\).*|\1|p' "$f" | head -1)
+  parent=$(recipe_parent "$f")
   [ -n "$parent" ] && [ -e "$parent" ] && { recipe_model "$parent" $((depth + 1)); return; }
   printf '%s' '(none declared)'
 }
 
 cmd_recipes() {
+  [ "${1:-}" = check ] && { shift; recipes_check "$@"; return; }
   flags_parse "$@"
-  local n plats f m tp any=0
-  bold "recipes${WANT_PLATFORM:+ for $(platform_title "$WANT_PLATFORM")}"
-  for n in $(recipe_names); do
-    plats=$(recipe_platforms "$n")
-    if [ -n "$WANT_PLATFORM" ]; then
-      case " $plats " in *" $WANT_PLATFORM "*) ;; *) continue ;; esac
-    fi
-    any=1
-    f=$(recipe_location "$n")
-    case "$f" in *.env) ;; *) f=$f/$(printf '%s' "$plats" | cut -d' ' -f1).env ;; esac
-    m=$(recipe_model "$f")
-    tp="solo"; is_tp2 "$f" && tp="TP=2"
-    printf '  %-30s %-6s %-24s %s\n' "$n" "$tp" "$(printf '%s' "$plats" | tr ' ' ,)" "$m"
-  done
-  [ $any = 1 ] || dim "  none yet — try: rack new <name> <org/model>${WANT_PLATFORM:+ --$WANT_PLATFORM}"
+  [ ${#REST[@]} -eq 0 ] || die "usage: rack recipes [--dgx|--linux|--windows|--mac] [--json] | rack recipes check [<name>...]"
+  local here budget names json=""
+  [ "$JSON" = 1 ] && json=--json
+  here=$(this_platform)
+  platform_detect
+  budget=$(platform_model_budget_mb)
+  names=$(recipe_names)
+  if [ "$JSON" != 1 ]; then
+    if [ -z "$WANT_PLATFORM" ]; then bold "recipes"
+    elif [ "$WANT_PLATFORM" = "$here" ]; then
+      bold "recipes for $(platform_title "$here") that fit here (about $(( (budget + 512) / 1024 )) GiB for models)"
+    else bold "recipes for $(platform_title "$WANT_PLATFORM")"; fi
+    [ -n "$names" ] || { dim "  none yet — try: rack new <name> <org/model>${WANT_PLATFORM:+ --$WANT_PLATFORM}"; return 0; }
+  fi
+  # shellcheck disable=SC2086  # names are recipe names: no spaces
+  recipe_index $names | python3 "$ROOT/py/recipes.py" list --root "$ROOT" --here "$here" --budget-mb "${budget:-0}" \
+    ${WANT_PLATFORM:+--platform "$WANT_PLATFORM"} ${json:+"$json"}
+}
+
+# The check, for what recipe_resolve just found (a name or a path): that
+# variant and what it sources.
+check_resolved() {
+  local loc=$RECIPE_FILE
+  case "$(basename "$RECIPE_FILE")" in
+    dgx.env|linux.env|windows.env|mac.env) [ -f "$RECIPE_DIR/model.env" ] && loc=$RECIPE_DIR ;;
+  esac
+  printf '%s\t%s\trepo\n' "$RECIPE_NAME" "$loc" \
+    | python3 "$ROOT/py/recipes.py" check --root "$ROOT" --platform "$TARGET_PLATFORM"
+}
+
+# rack recipes check [<name>...]: what may be in a recipe, and whether each
+# variant has what its engine needs. Errors fail; warnings do not.
+recipes_check() {
+  local names="" n
+  if [ $# -gt 0 ]; then
+    for n in "$@"; do names="$names $(recipe_name_of "$n")"; done
+  else
+    names=$(recipe_names)
+  fi
+  # shellcheck disable=SC2086  # names are recipe names: no spaces
+  recipe_index $names | python3 "$ROOT/py/recipes.py" check --root "$ROOT"
 }
 
 # ---------------------------------------------------------------- new ------
+# rack new <name> <org/model> [--<platform>]: a recipe folder, recipes/<name>/,
+# with model.env and this platform's variant (default: this machine's). For an
+# existing recipe it adds that platform's variant; a flat recipe from before
+# 1.0 first becomes a folder, its file kept as dgx.env (and linux.env still
+# serving it on NVIDIA Linux, as before). New recipes go into the checkout when
+# rack runs from a git checkout (to commit), else into your own recipes,
+# ~/.config/dgx-serve/recipes, which updates never touch.
 cmd_new() {
-  local name=${1:?usage: rack new <name> <org/model>} id=${2:?usage: rack new <name> <org/model>}
-  local f="recipes/$name.env"
-  [ -e "$f" ] && die "$f already exists"
-  [ -e "$TEMPLATE" ] || die "missing $TEMPLATE — the scaffold lives there, not in this script"
+  flags_parse "$@"
+  set -- ${REST[@]+"${REST[@]}"}
+  { [ $# -ge 1 ] && [ $# -le 2 ]; } || die "usage: rack new <name> <org/model> [--dgx|--linux|--windows|--mac]"
+  local name=$1 id=${2:-} plat dir loc tmpl variant model
+  inv_valid_name "$name" || die "recipe names are letters, digits, dot, dash and underscore: '$name'"
+  case "$name" in TEMPLATE*) die "TEMPLATE names the scaffolds: pick another name" ;; esac
+  [ -z "$id" ] || case "$id" in */*) ;; *) die "the model is a Hugging Face id, org/name (got: $id)" ;; esac
+  plat=${WANT_PLATFORM:-$(this_platform)}
+  case "$plat" in dgx|linux|windows|mac) ;;
+    *) die "this machine is not one rack serves on: say which platform (--dgx, --linux, --windows or --mac)" ;; esac
+  case "$plat" in dgx|linux) tmpl=$ROOT/recipes/TEMPLATE.env ;; *) tmpl=$ROOT/recipes/TEMPLATE-llamacpp.env ;; esac
+  [ -f "$tmpl" ] || die "missing $tmpl — the scaffold lives there, not in this script"
+  loc=$(recipe_location "$name")
+  case "$loc" in
+    '')
+      [ -n "$id" ] || die "a new recipe needs its model: rack new $name <org/model> --$plat"
+      case "$plat:$id" in mac:*-GGUF|mac:*-gguf|windows:*-GGUF|windows:*-gguf) model=${id%-[Gg][Gg][Uu][Ff]} ;; *) model=$id ;; esac
+      dir=$(new_recipe_home)/$name
+      mkdir -p "$dir"
+      new_model_env "$name" "$model" > "$dir/model.env" ;;
+    *.env) dir=$(flat_to_folder "$name" "$loc") ;;
+    *) dir=$loc ;;
+  esac
+  model=$(recipe_model "$dir/model.env")
+  variant=$dir/$plat.env
+  [ -e "$variant" ] && die "$variant already exists"
 
   # Header of our own, then the template from its first question down. The
   # template's preamble is guidance for the author and does not belong in a
   # recipe; docs/05-recipe-method.md is the long form.
-  { printf '# %s — scaffolded %s by: rack new\n' "$name" "$(date +%Y-%m-%d)"
+  local fit=${id:-$model} artifact=""
+  case "$plat:$id" in mac:*-GGUF|mac:*-gguf|windows:*-GGUF|windows:*-gguf) artifact=$id/FILL_ME.gguf ;; esac
+  { printf '# %s on %s — scaffolded %s by: rack new\n' "$name" "$(platform_title "$plat" | sed 's/^an* //')" "$(date +%Y-%m-%d)"
     printf '# Answer the questions in order. A flag with no reason is a flag\n'
     printf '# nobody can safely delete later.  docs/05-recipe-method.md\n\n'
-    sed -n '/^# --- 1 FIT/,$p' "$TEMPLATE" \
-      | sed -e "s|^MODEL=$|MODEL=$id|" \
-            -e "s|^#     rack fit <org/model>$|#     rack fit $id|" \
-            -e "s|^  --served-model-name$|  --served-model-name $name|" \
-            -e "s|^  --port 8888$|  --port $API_PORT|"
-  } > "$f"
+    sed -n '/^# --- 1 FIT/,$p' "$tmpl" \
+      | sed -e "s|^#     rack fit <org/model>.*$|#     rack fit $fit --$plat|" \
+            -e "s|^ARTIFACT=FILL_ME$|ARTIFACT=${artifact:-FILL_ME}|" \
+            -e "s|rack up <name> --mac|rack up $name --$plat|" \
+            -e "s|rack up <name>|rack up $name|"
+  } > "$variant"
 
-  bold "wrote $f"
-  dim "  1. rack fit $id      then record the verdict in the file"
-  dim "  2. edit it, in order, top to bottom"
-  dim "  3. rack up $name"
+  bold "wrote $variant"
+  dim "  1. rack fit $fit --$plat      then record the verdict in the file"
+  dim "  2. edit it, in order, top to bottom (and $(basename "$dir")/model.env: roles, dialect)"
+  dim "  3. rack recipes check $name"
+  dim "  4. rack up $name --$plat"
+}
+
+# Where a new recipe goes: the checkout when it is a git work tree (yours to
+# commit), else your own recipes, outside the install.
+new_recipe_home() {
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then printf '%s/recipes' "$ROOT"
+  else mkdir -p "$DGX_SERVE_CONFIG/recipes"; printf '%s/recipes' "$DGX_SERVE_CONFIG"; fi
+}
+
+new_model_env() { # new_model_env <name> <org/model>
+  cat <<EOF
+# $1 — what every platform shares. Scaffolded $(date +%Y-%m-%d) by: rack new
+# The platform files (dgx.env, linux.env, windows.env, mac.env) source this.
+
+# --- 3 ACCESS: the model, as Hugging Face names it. Gated? Say how you got in.
+MODEL=$2
+
+# What the app may send it: chat tools reasoning vision code embedding rerank draft
+ROLES="chat"
+
+# --- 5 DIALECT, the per-request half: what a client must do for correct
+# answers. The app reads these; leave out what does not apply.
+# DIALECT_THINKING=          how thinking is switched, e.g. chat_template_kwargs.enable_thinking
+# DIALECT_EFFORT=            how effort is set, e.g. reasoning_effort
+# DIALECT_STRIP_REASONING=1  earlier turns' reasoning stays out of the history
+# DIALECT_ECHO_REASONING=1   reasoning_content must be sent back (DeepSeek, with tools)
+# DIALECT_MIN_MAX_TOKENS=    a max_tokens floor, for models that think at length (GLM)
+# DIALECT_SAMPLING=          the vendor's sampling, e.g. "temperature=0.6 top_p=0.95"
+EOF
+}
+
+# recipes/<name>.env (flat, before 1.0) -> recipes/<name>/: the file becomes
+# dgx.env (git mv when tracked, so history follows), model.env names the
+# model, and linux.env keeps serving it on NVIDIA Linux with the same flags.
+flat_to_folder() { # flat_to_folder <name> <file>; prints the folder
+  local name=$1 file=$2 dir model
+  dir=${file%.env}
+  model=$(recipe_model "$file")
+  mkdir -p "$dir"
+  if git -C "$(dirname "$file")" ls-files --error-unmatch "$(basename "$file")" >/dev/null 2>&1; then
+    git -C "$(dirname "$file")" mv "$(basename "$file")" "$name/dgx.env"
+  else
+    mv "$file" "$dir/dgx.env"
+  fi
+  new_model_env "$name" "$model" > "$dir/model.env"
+  # shellcheck disable=SC2016  # the line written must say $RECIPE_DIR, unexpanded
+  printf '# %s on NVIDIA Linux: the flags of dgx.env, as before recipes v2.\n# Re-answer the site questions for your GPU (docs/05-recipe-method.md).\n. "$RECIPE_DIR/dgx.env"\n' \
+    "$name" > "$dir/linux.env"
+  warn "$name was one file; it is now the folder $dir (dgx.env, linux.env, model.env)"
+  printf '%s' "$dir"
 }
 
 # --------------------------------------------------------- lifecycle ------
@@ -398,9 +519,14 @@ cmd_up() {
   case "$TARGET_PLATFORM" in
     windows|mac) die "serving on $(platform_title "$TARGET_PLATFORM") needs the native launcher, which is not in this build yet" ;;
   esac
+  # Recipes are sourced: one that does more than assign variables never is.
+  check_resolved >/dev/null || { check_resolved >&2 || true; die "$RECIPE_NAME fails rack recipes check: fix it first"; }
   # A scaffolded recipe that was never finished would otherwise reach the engine
   # as a bare `--max-model-len --max-num-seqs` and fail somewhere less obvious.
-  grep -q 'FILL_ME' "$f" && die "$f still has FILL_ME placeholders — answer question 4 (docs/05-recipe-method.md)"
+  grep -qs 'FILL_ME' "$f" "$RECIPE_DIR/model.env" \
+    && die "$f still has FILL_ME placeholders — answer its questions (docs/05-recipe-method.md)"
+  [ "$(sed -n 's/^ENGINE=//p' "$f" | tail -1)" = llamacpp ] \
+    && die "$RECIPE_NAME serves with llama.cpp on $TARGET_PLATFORM: that needs the native launcher, which is not in this build yet"
   if [ "$how" = cluster ]; then
     bold "launching $f across $HEAD_LABEL and $WORKER_NAMES"
     RECIPE_DIR=$RECIPE_DIR "$ROOT/scripts/launch-cluster.sh" "$f" "$@"

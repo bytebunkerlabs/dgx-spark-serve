@@ -9,7 +9,7 @@ when something breaks.
 ```bash
 scripts/preflight.sh                      # gate 0 — must be all-PASS
 scripts/build.sh --profile ngc            # build + sync (sync harmless here)
-scripts/launch-solo.sh recipes/phase1-qwen3-8b.env
+scripts/launch-solo.sh recipes/phase1-qwen3-8b/dgx.env
 ```
 
 First boot compiles kernels — minutes, not seconds. You're waiting for:

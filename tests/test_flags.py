@@ -47,7 +47,8 @@ class Base(unittest.TestCase):
 
 TINY = {
     "model.env": "MODEL=Qwen/Qwen3-0.6B\nROLES=chat\n",
-    "mac.env": '. "$RECIPE_DIR/model.env"\nENGINE=llamacpp\nSERVE_ARGS=(--ctx-size 8192)\n',
+    "mac.env": '. "$RECIPE_DIR/model.env"\nENGINE=llamacpp\nARTIFACT=Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf\n'
+               'SERVE_ARGS=(--ctx-size 8192)\n',
 }
 
 
@@ -79,14 +80,15 @@ class Flags(Base):
         d = rack_json(m.rack("up", "phase1", "--plan", "--json"))
         self.assertEqual((d["recipe"], d["platform"], d["model"], d["topology"]),
                          ("phase1-qwen3-8b", "dgx", "Qwen/Qwen3-8B", "solo"))
-        self.assertTrue(d["variant"].endswith("/recipes/phase1-qwen3-8b.env"), d["variant"])
+        self.assertTrue(d["variant"].endswith("/recipes/phase1-qwen3-8b/dgx.env"), d["variant"])
 
     def test_a_flat_recipe_serves_dgx_and_linux_only(self):
         m = self.machine(linux_4090x2)
-        self.assertEqual(rack_json(m.rack("up", "phase1-qwen3-8b", "--plan", "--json"))["platform"], "linux")
-        r = m.rack("up", "phase1-qwen3-8b", "--windows", "--plan")
-        self.fails(r, "phase1-qwen3-8b is a vLLM container recipe from before 1.0")
-        self.assertIn("rack new phase1-qwen3-8b --windows", r.stderr)
+        flat = "phase2-gpt-oss-120b-solo"
+        self.assertEqual(rack_json(m.rack("up", flat, "--plan", "--json"))["platform"], "linux")
+        r = m.rack("up", flat, "--windows", "--plan")
+        self.fails(r, flat + " is a vLLM container recipe from before 1.0")
+        self.assertIn("rack new %s --windows" % flat, r.stderr)
 
     def test_plan_works_on_any_machine(self):
         m = self.machine(dgx_spark)
@@ -122,7 +124,8 @@ class Flags(Base):
         self.recipe(m, "tiny", TINY)
         out = m.rack("recipes").stdout
         self.assertRegex(out, r"tiny\s+solo\s+mac\s+Qwen/Qwen3-0.6B")
-        self.assertRegex(out, r"phase1-qwen3-8b\s+solo\s+dgx,linux\s+Qwen/Qwen3-8B")
+        self.assertRegex(out, r"phase2-gpt-oss-120b-solo\s+solo\s+dgx,linux\s+openai/gpt-oss-120b")
+        self.assertRegex(out, r"phase1-qwen3-8b\s+solo\s+dgx\s+Qwen/Qwen3-8B")
         self.assertNotIn("TEMPLATE", out)
         mac = m.rack("recipes", "--mac").stdout
         self.assertIn("tiny", mac)

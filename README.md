@@ -69,7 +69,7 @@ ssh spark-2 'cd dgx/dgx-spark-serve && scripts/preflight.sh'
 
 ```bash
 scripts/build.sh --profile ngc --no-sync
-scripts/launch-solo.sh recipes/phase1-qwen3-8b.env
+scripts/launch-solo.sh recipes/phase1-qwen3-8b/dgx.env
 # in another shell:
 scripts/bench.py --model Qwen/Qwen3-8B --label baseline
 ```

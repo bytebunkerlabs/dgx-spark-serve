@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Serve one model on THIS node only. The smallest end-to-end path — phase 1.
-#   scripts/launch-solo.sh recipes/phase1-qwen3-8b.env
+#   scripts/launch-solo.sh recipes/phase1-qwen3-8b/dgx.env
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . lib/common.sh

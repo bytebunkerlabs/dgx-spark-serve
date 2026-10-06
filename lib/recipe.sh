@@ -16,17 +16,15 @@
 PLATFORMS="dgx linux windows mac"
 FLAT_PLATFORMS="dgx linux"
 
-recipe_path() { printf '%s\n' "$DGX_SERVE_CONFIG/recipes" "${RACK_ROOT:-.}/recipes"; }
-
-# Every recipe name, once (a name in the overlay hides the checkout's).
+# Every recipe name, once (a name of yours hides the checkout's).
 recipe_names() {
   local d f n seen=" "
-  for d in $(recipe_path); do
+  for d in "$DGX_SERVE_CONFIG/recipes" "${RACK_ROOT:-.}/recipes"; do
     [ -d "$d" ] || continue
     for f in "$d"/*/model.env "$d"/*.env; do
       [ -f "$f" ] || continue
       case "$f" in */model.env) n=$(basename "$(dirname "$f")") ;; *) n=$(basename "$f" .env) ;; esac
-      [ "$n" = TEMPLATE ] && continue
+      case "$n" in TEMPLATE*) continue ;; esac
       case "$seen" in *" $n "*) continue ;; esac
       seen="$seen$n "
       printf '%s\n' "$n"
@@ -37,9 +35,10 @@ recipe_names() {
 # Where a recipe lives: its folder (v2) or its file (flat). Empty if none.
 recipe_location() {
   local d
-  for d in $(recipe_path); do
+  case "$1" in TEMPLATE*|'') return 0 ;; esac
+  for d in "$DGX_SERVE_CONFIG/recipes" "${RACK_ROOT:-.}/recipes"; do
     [ -f "$d/$1/model.env" ] && { printf '%s' "$d/$1"; return; }
-    [ -f "$d/$1.env" ] && [ "$1" != TEMPLATE ] && { printf '%s' "$d/$1.env"; return; }
+    [ -f "$d/$1.env" ] && { printf '%s' "$d/$1.env"; return; }
   done
   return 0
 }
@@ -59,7 +58,7 @@ recipe_platforms() {
 # A name, or a unique prefix of one: `rack up inkling` finds inkling-small-nvfp4.
 recipe_name_of() {
   local r=$1 n matches="" count=0
-  [ "$r" = TEMPLATE ] && die "TEMPLATE is the scaffold, not a recipe: rack new <name> <org/model>"
+  case "$r" in TEMPLATE*) die "$r is the scaffold, not a recipe: rack new <name> <org/model>" ;; esac
   [ -n "$(recipe_location "$r")" ] && { printf '%s' "$r"; return; }
   for n in $(recipe_names); do
     case "$n" in "$r"*) matches="${matches:+$matches }$n"; count=$((count + 1)) ;; esac
@@ -108,4 +107,14 @@ recipe_resolve() {
 flat_refusal() {
   printf '%s is a vLLM container recipe from before 1.0 (one file): it serves on a DGX Spark or NVIDIA Linux, not %s. Give it a %s variant: rack new %s --%s' \
     "$1" "$(platform_title "$2")" "$2" "$1" "$2"
+}
+
+# One line per recipe for py/recipes.py: name, location, and whose it is.
+recipe_index() {
+  local n loc kind
+  for n in "$@"; do
+    loc=$(recipe_location "$n")
+    case "$loc" in "$DGX_SERVE_CONFIG"/*) kind=mine ;; *) kind=repo ;; esac
+    printf '%s\t%s\t%s\n' "$n" "$loc" "$kind"
+  done
 }
