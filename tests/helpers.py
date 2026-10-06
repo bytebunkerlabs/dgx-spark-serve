@@ -20,7 +20,7 @@ BASH = "/bin/bash"
 TOOLS = ["awk", "sed", "tr", "cut", "head", "tail", "cat", "grep", "sort", "uniq", "wc", "date", "tar",
          "mkdir", "mv", "rm", "cp", "dirname", "basename", "ls", "find", "env", "readlink", "chmod",
          "ln", "mktemp", "touch", "sleep", "seq", "id", "python3", "bash", "sh", "tee", "printf",
-         "true", "false", "test", "expr", "od", "xargs", "comm", "diff", "stat", "df", "git"]
+         "true", "false", "test", "expr", "od", "xargs", "comm", "diff", "stat", "df", "git", "shasum", "sha256sum"]
 
 
 class FakeMachine:

@@ -156,7 +156,7 @@ class Plans(Base):
         self.assertIn("MemoryMax=11G", unit)
         self.assertRegex(unit, r"Environment=LD_LIBRARY_PATH=\S+/llama-b11430:\S+/cudart-llama-b11430-bin-ubuntu-cuda-12.8-x64")
         self.assertRegex(unit, r"ExecStart=\S+/llama-server -m \S+Qwen3-8B-Q4_K_M.gguf --host 0.0.0.0 --port 8888 "
-                               r"--alias qwen3-8b --api-key-file \S+engine.key --n-gpu-layers 999 --ctx-size 8192")
+                               r"--alias qwen3-8b --metrics --api-key-file \S+engine.key --n-gpu-layers 999 --ctx-size 8192")
         self.assertEqual(runs(p)[-3:], [["systemctl", "--user", "daemon-reload"],
                                         ["systemctl", "--user", "enable", "dgx-serve-engine.service"],
                                         ["systemctl", "--user", "restart", "dgx-serve-engine.service"]])

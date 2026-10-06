@@ -216,6 +216,142 @@ class Parsers(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(out))
 
 
+VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  1694890.
+Pages active:                                3111814.
+Pages inactive:                              2711880.
+Pages speculative:                            409321.
+Pages throttled:                                   0.
+Pages wired down:                             371656.
+Pages purgeable:                              219685.
+"Translation faults":                    27367747768.
+File-backed pages:                           1983638.
+Anonymous pages:                             4249377.
+Pages occupied by compressor:                  29898.
+"""
+IOREG = ('    "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=9748512768,'
+         '"Tiler Utilization %"=28,"Renderer Utilization %"=27,"Device Utilization %"=28,'
+         '"In use system memory"=1724350464}\n    "model" = "Apple M3 Max"\n    "gpu-core-count" = 40\n')
+NETSTAT_LISTEN = """Active Internet connections (including servers)
+Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes
+tcp4       0      0  192.168.12.161.57248   52.85.31.85.443        ESTABLISHED         4012         3727
+tcp4       0      0  127.0.0.1.8888         *.*                    LISTEN                 0            0
+tcp46      0      0  *.9177                 *.*                    LISTEN                 0            0
+tcp6       0      0  *.11434                *.*                    LISTEN                 0            0
+"""
+NETSTAT_IB = """Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+lo0        16384 <Link#1>                      20326407     0 40368691630 20326407     0 40368691630     0
+lo0        16384 127           127.0.0.1       20326407     - 40368691630 20326407     - 40368691630     -
+en0        1500  <Link#11>   f0:2f:4b:12:34:56 990000     0 812345678  450000     0  45678901     0
+en0        1500  192.168.12    192.168.12.161    990000     -  812345678  450000     -  45678901     -
+utun6      1280  <Link#25>                          100     0      34567      120     0      45678     0
+utun6      1280  100.121.110/24 100.121.110.24      100     -      34567      120     -      45678     -
+utun2      1380  <Link#21>                           10     0       1000       10     0       1000     0
+"""
+
+
+class Mac(unittest.TestCase):
+    """The macOS sampler's parsers, pinned against output captured on an M3 Max."""
+
+    def test_vm_stat_and_memory(self):
+        vm = rackmon.parse_vm_stat(VM_STAT)
+        self.assertEqual((vm["page_size"], vm["free"], vm["purgeable"], vm["file_backed"]),
+                         (16384, 1694890, 219685, 1983638))
+        mem = rackmon.mac_mem(vm, 137438953472, rackmon.parse_swapusage(
+            "total = 2048.00M  used = 578.44M  free = 1469.56M  (encrypted)"))
+        avail = (1694890 + 2711880 + 409321 + 219685) * 16384
+        self.assertEqual((mem["total"], mem["available"], mem["used"]), (137438953472, avail, 137438953472 - avail))
+        self.assertEqual((mem["swap_total"], mem["swap_used"]), (2048 * 2 ** 20, int(578.44 * 2 ** 20)))
+
+    def test_gpu_and_thermal(self):
+        g = rackmon.parse_ioreg_gpu(IOREG)
+        self.assertEqual((g["model"], g["cores"], g["util"], g["mem_used"]), ("Apple M3 Max", 40, 28, 1724350464))
+        self.assertEqual(rackmon.parse_pmset_therm("Note: No thermal warning level has been recorded\n"), (None, None))
+        self.assertEqual(rackmon.parse_pmset_therm("CPU_Scheduler_Limit \t= 100\nCPU_Speed_Limit \t= 70\n")[0], 70)
+
+    def test_listening_and_interfaces(self):
+        self.assertEqual(rackmon.parse_netstat_listen(NETSTAT_LISTEN),
+                         [("127.0.0.1", 8888), ("0.0.0.0", 9177), ("::", 11434)])
+        ib = rackmon.parse_netstat_ib(NETSTAT_IB)
+        self.assertEqual(ib["en0"], (812345678, 45678901, ["192.168.12.161"]))
+        self.assertEqual(ib["utun6"][2], ["100.121.110.24"])
+        self.assertEqual(rackmon.mac_iface_kind("utun6", ["100.121.110.24"]), "tailnet")
+        self.assertIsNone(rackmon.mac_iface_kind("utun2", ["10.8.0.2"]))       # another VPN: not shown
+        self.assertEqual(rackmon.mac_iface_kind("en0", ["192.168.12.161"]), "lan")
+
+
+class Serving(unittest.TestCase):
+    """rack up's record, published as the node's serving block, and an
+    engine that wants its key on every route."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.saved = {k: os.environ.get(k) for k in ("MONITOR_SERVING", "MONITOR_ENGINE_KEY_FILE",
+                                                     "MONITOR_STATE_DIR", "MONITOR_ENGINE_PORTS")}
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_the_block_carries_no_paths(self):
+        p = os.path.join(self.tmp, "serving.json")
+        with open(p, "w") as f:
+            json.dump({"recipe": "qwen3-8b", "engine": "llamacpp", "port": 8888, "log": "/home/me/engine.log",
+                       "dialect": {"thinking": "x"}}, f)
+        d = rackmon.read_serving(p)
+        self.assertEqual((d["recipe"], d["engine"], d["port"], d["dialect"]), ("qwen3-8b", "llamacpp", 8888, {"thinking": "x"}))
+        self.assertNotIn("log", d)
+        self.assertIsNone(rackmon.read_serving(os.path.join(self.tmp, "none.json")))
+
+    def test_a_keyed_engine_rack_declared_is_found_and_read(self):
+        key = os.path.join(self.tmp, "engine.key")
+        with open(key, "w") as f:
+            f.write("k3y\n")
+
+        class Keyed(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.headers.get("Authorization") != "Bearer k3y":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+                body = (b"llamacpp:tokens_predicted_total 42\nllamacpp:requests_processing 1\n"
+                        if self.path == "/metrics" else b'{"data":[{"id":"tiny"}]}')
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Keyed)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        try:
+            sp = os.path.join(self.tmp, "serving.json")
+            with open(sp, "w") as f:
+                json.dump({"recipe": "tiny", "engine": "llamacpp", "port": port}, f)
+            os.environ.update({"MONITOR_SERVING": sp, "MONITOR_ENGINE_KEY_FILE": key,
+                               "MONITOR_STATE_DIR": self.tmp, "MONITOR_ENGINE_PORTS": "1"})
+            n = rackmon.make_node()
+            n.listening = lambda: [("127.0.0.1", port)]
+            s = n.sample()
+            self.assertEqual(s["serving"]["recipe"], "tiny")
+            (e,) = s["engines"]
+            self.assertEqual((e["kind"], e["port"], e["models"]), ("llama.cpp", port, ["tiny"]))
+            os.environ.pop("MONITOR_ENGINE_KEY_FILE")          # without the key: still found, from the record
+            n = rackmon.make_node()
+            n.listening = lambda: [("127.0.0.1", port)]
+            (e,) = n.sample()["engines"]
+            self.assertEqual(e["kind"], "llama.cpp")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 class FakeNode:
     """A Node that answers canned snapshots, for the HTTP layer."""
 
@@ -355,15 +491,18 @@ class NodeOnThisMachine(unittest.TestCase):
     def test_sample_twice(self):
         os.environ["MONITOR_STATE_DIR"] = tempfile.mkdtemp()
         os.environ["MONITOR_ENGINE_PORTS"] = "1"          # nothing to discover in a test
-        n = rackmon.Node()
+        n = rackmon.make_node()
         n.sample()
         time.sleep(0.2)
         s = n.sample()
         self.assertEqual(s["schema"], rackmon.SCHEMA)
         self.assertIn("docker relay", s["containers_error"])
-        if sys.platform.startswith("linux"):
+        if sys.platform.startswith("linux") or sys.platform == "darwin":
             self.assertIsNotNone(s["cpu"]["pct"])
             self.assertGreater(s["mem"]["total"], 0)
+        if sys.platform == "darwin":
+            self.assertTrue(s["system"]["unified_memory"])
+            self.assertTrue(s["system"]["os"].startswith("macOS"))
         snap = n.snapshot(history=5)
         self.assertEqual(len(snap["history"]["t"]), 1)
 

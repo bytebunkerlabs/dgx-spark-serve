@@ -410,6 +410,31 @@ def proc_label(cmdline, fallback):
 
 
 # =================================================================== sampler ==
+def engine_headers():
+    """The engine key, for engines that want one on every route (llama.cpp's
+    /metrics). Only a bare monitor, running as the engine's own user, is
+    given the file (MONITOR_ENGINE_KEY_FILE); it reads and never sends it
+    anywhere but the local engine."""
+    path = env("MONITOR_ENGINE_KEY_FILE")
+    key = read(path).strip() if path else ""
+    return {"Authorization": "Bearer " + key} if key else {}
+
+
+SERVING_KEYS = ("recipe", "model", "served_name", "engine", "runtime", "platform", "port", "nodes", "roles",
+                "dialect", "context", "tools", "reasoning", "vision", "speculative", "key_required",
+                "engine_build", "started_at")
+
+
+def read_serving(path):
+    """What rack up recorded as serving on this node (plan: serving.json), or None."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {k: d.get(k) for k in SERVING_KEYS} if isinstance(d, dict) else None
+
+
 class Engine:
     """One inference server found on a local port, with enough of its own
     history to turn counters into rates and histograms into percentiles."""
@@ -438,7 +463,7 @@ class Engine:
                 self.refresh_models(now)
                 self.error = None
                 return
-            text = http_text(self.url("/metrics"), timeout=1.5, limit=8 << 20)
+            text = http_text(self.url("/metrics"), timeout=1.5, limit=8 << 20, headers=engine_headers())
             self.hist.append((now, summarize_engine(self.kind, parse_prom(text))))
             self.refresh_models(now)
             self.error = None
@@ -450,7 +475,7 @@ class Engine:
             return
         self.models_at = now
         try:
-            d = http_json(self.url("/v1/models"), timeout=1.5)
+            d = http_json(self.url("/v1/models"), timeout=1.5, headers=engine_headers())
             data = d.get("data") or []
             self.models = [m.get("id") for m in data if m.get("id")]
             lens = [m.get("max_model_len") for m in data if isinstance(m.get("max_model_len"), int)]
@@ -584,6 +609,8 @@ class Node:
         self.os_release_path = env("MONITOR_HOST_OS_RELEASE", "/run/host/os-release")
         self.engine_ports = sorted({int(p) for p in re.split(r"[,\s]+", env("MONITOR_ENGINE_PORTS", ENGINE_PORTS_DEFAULT)) if p.isdigit()})
         self.own_port = int(env("MONITOR_PORT", "9177"))
+        self.serving_path = env("MONITOR_SERVING", os.path.expanduser("~/.local/state/dgx-serve/serving.json"))
+        self.serving = None
         self.lock = threading.Lock()
         self.prev_stat, self.prev_net, self.prev_t = None, None, None
         self.prev_cg = {}
@@ -727,16 +754,19 @@ class Node:
             return
         self.engines_at = now
         listening = {}
-        for path, v6 in (("/proc/net/tcp", False), ("/proc/net/tcp6", True)):
-            for ip, port in parse_listen(read(path), v6):
-                if port in self.engine_ports and port != self.own_port:
-                    if ip in ("0.0.0.0", "::", "::ffff:0.0.0.0") or ip.startswith("127.") or ip == "::1":
-                        host = "127.0.0.1" if ip != "::1" else "::1"
-                    elif ":" in ip:
-                        continue
-                    else:
-                        host = ip
-                    listening.setdefault(port, host)
+        declared = self.serving or {}
+        ports = set(self.engine_ports)
+        if isinstance(declared.get("port"), int):
+            ports.add(declared["port"])               # rack up said where its engine listens
+        for ip, port in self.listening():
+            if port in ports and port != self.own_port:
+                if ip in ("0.0.0.0", "::", "::ffff:0.0.0.0") or ip.startswith("127.") or ip == "::1":
+                    host = "127.0.0.1" if ip != "::1" else "::1"
+                elif ":" in ip:
+                    continue
+                else:
+                    host = ip
+                listening.setdefault(port, host)
         for port in list(self.engines):
             if port not in listening:
                 del self.engines[port]
@@ -745,7 +775,8 @@ class Node:
                 continue
             kind = None
             try:
-                kind = engine_kind(http_text("http://%s:%d/metrics" % (host, port), timeout=1.0, limit=8 << 20))
+                kind = engine_kind(http_text("http://%s:%d/metrics" % (host, port), timeout=1.0, limit=8 << 20,
+                                             headers=engine_headers()))
             except Exception:  # noqa: BLE001
                 pass
             if not kind:
@@ -756,10 +787,13 @@ class Node:
                     pass
             if not kind:
                 try:
-                    if isinstance(http_json("http://%s:%d/v1/models" % (host, port), timeout=1.0).get("data"), list):
+                    if isinstance(http_json("http://%s:%d/v1/models" % (host, port), timeout=1.0,
+                                            headers=engine_headers()).get("data"), list):
                         kind = "openai"
                 except Exception:  # noqa: BLE001
                     pass
+            if not kind and declared.get("port") == port:
+                kind = {"llamacpp": "llama.cpp", "vllm": "vllm"}.get(declared.get("engine"), "openai")
             if kind:
                 self.engines[port] = Engine(host, port, kind)
 
@@ -810,11 +844,35 @@ class Node:
                     out[g] = max(out.get(g, 0), round(v / 1000.0, 1))
         return out
 
+    # ------------------------------------------- the parts a platform swaps
+    def read_cpu_ticks(self):
+        """{'cpu': (idle, total), 'cpu0': ...}, cumulative."""
+        return parse_proc_stat(read("/proc/stat"))
+
+    def read_load(self):
+        return parse_loadavg(read("/proc/loadavg"))
+
+    def read_mem(self):
+        mi = parse_meminfo(read("/proc/meminfo"))
+        total, avail = mi.get("MemTotal"), mi.get("MemAvailable")
+        return {"total": total, "available": avail,
+                "used": (total - avail) if total and avail is not None else None,
+                "cached": mi.get("Cached"), "swap_total": mi.get("SwapTotal"),
+                "swap_used": (mi["SwapTotal"] - mi.get("SwapFree", 0)) if mi.get("SwapTotal") else 0}
+
+    def read_uptime(self):
+        up_text = read("/proc/uptime").split()
+        return num(up_text[0]) if up_text else None
+
+    def listening(self):
+        """[(ip, port)] of listening TCP sockets."""
+        return parse_listen(read("/proc/net/tcp")) + parse_listen(read("/proc/net/tcp6"), True)
+
     def sample(self):
         t0 = time.time()
         now = t0
         dt = (now - self.prev_t) if self.prev_t else None
-        stat = parse_proc_stat(read("/proc/stat"))
+        stat = self.read_cpu_ticks()
         cores = []
         if self.prev_stat:
             for i in range(len(stat) - 1):
@@ -822,14 +880,10 @@ class Node:
                 if k in stat:
                     cores.append(busy_pct(self.prev_stat.get(k), stat[k]))
         cpu = {"pct": busy_pct((self.prev_stat or {}).get("cpu"), stat.get("cpu")),
-               "cores_pct": cores, "load": parse_loadavg(read("/proc/loadavg"))}
+               "cores_pct": cores, "load": self.read_load()}
         self.prev_stat = stat
-        mi = parse_meminfo(read("/proc/meminfo"))
-        total, avail = mi.get("MemTotal"), mi.get("MemAvailable")
-        mem = {"total": total, "available": avail,
-               "used": (total - avail) if total and avail is not None else None,
-               "cached": mi.get("Cached"), "swap_total": mi.get("SwapTotal"),
-               "swap_used": (mi["SwapTotal"] - mi.get("SwapFree", 0)) if mi.get("SwapTotal") else 0}
+        mem = self.read_mem()
+        self.serving = read_serving(self.serving_path)
         containers, containers_error = self.sample_containers(now, dt)
         gpus = self.sample_gpus(containers)
         gpu_proc_mem = sum(p["mem"] or 0 for g in gpus for p in g["procs"])
@@ -845,8 +899,7 @@ class Node:
                       "used": (st.f_blocks - st.f_bfree) * st.f_frsize}]
         except OSError:
             disks = []
-        up_text = read("/proc/uptime").split()
-        uptime = num(up_text[0]) if up_text else None
+        uptime = self.read_uptime()
         temps = self.sample_temps()
         if gpus and gpus[0].get("temp") is not None:
             temps["gpu"] = max(g["temp"] for g in gpus if g.get("temp") is not None)
@@ -860,6 +913,7 @@ class Node:
             "system": system, "cpu": cpu, "mem": mem, "gpus": gpus,
             "gpu_error": self.gpu_error, "temps": temps, "disks": disks, "net": net,
             "engines": engines, "containers": containers, "containers_error": containers_error,
+            "serving": self.serving,
         }
 
         def by_kind(kind):
@@ -898,6 +952,238 @@ class Node:
                         "fabric", "lan", "tailnet")
                 snap["history"] = {k: [p.get(k) for p in pts] for k in keys}
         return snap
+
+
+# ===================================================================== macOS ==
+# Everything below is readable without root: Mach host statistics through
+# ctypes, vm_stat, the GPU's own counters in the IORegistry, pmset's thermal
+# notes, netstat. A Mac has no per-sensor temperatures without root, so
+# temps stays empty rather than guessed.
+
+def parse_vm_stat(text):
+    """vm_stat -> {'page_size': n, 'free': pages, 'active': ..., 'file_backed': ...}."""
+    out = {}
+    m = re.search(r"page size of (\d+) bytes", text)
+    out["page_size"] = int(m.group(1)) if m else 4096
+    keys = {"Pages free": "free", "Pages active": "active", "Pages inactive": "inactive",
+            "Pages speculative": "speculative", "Pages wired down": "wired", "Pages purgeable": "purgeable",
+            "File-backed pages": "file_backed", "Anonymous pages": "anonymous",
+            "Pages occupied by compressor": "compressor"}
+    for ln in text.splitlines():
+        k, _, v = ln.partition(":")
+        k = k.strip().strip('"')
+        if k in keys:
+            try:
+                out[keys[k]] = int(v.strip().rstrip("."))
+            except ValueError:
+                pass
+    return out
+
+
+def parse_swapusage(text):
+    """sysctl vm.swapusage -> (total, used) bytes."""
+    def size(label):
+        m = re.search(label + r"\s*=\s*([\d.]+)([KMGT])", text)
+        if not m:
+            return None
+        return int(float(m.group(1)) * 1024 ** "KMGT".index(m.group(2)) * 1024)
+    return size("total"), size("used")
+
+
+def mac_mem(vm, memsize, swap):
+    """Memory as the Linux sampler reports it. Available is what macOS can
+    hand out without paging: free, inactive, speculative and purgeable pages."""
+    ps = vm.get("page_size", 4096)
+    avail = sum(vm.get(k, 0) for k in ("free", "inactive", "speculative", "purgeable")) * ps
+    total = memsize or None
+    if total:
+        avail = min(avail, total)
+    st, su = swap
+    return {"total": total, "available": avail if total else None,
+            "used": (total - avail) if total else None,
+            "cached": vm.get("file_backed", 0) * ps if "file_backed" in vm else None,
+            "swap_total": st, "swap_used": su or 0}
+
+
+def parse_ioreg_gpu(text):
+    """ioreg -r -d 1 -w 0 -c IOAccelerator -> the GPU's model, cores and counters."""
+    out = {}
+    m = re.search(r'"model" = "([^"]+)"', text)
+    out["model"] = m.group(1) if m else None
+    m = re.search(r'"gpu-core-count" = (\d+)', text)
+    out["cores"] = int(m.group(1)) if m else None
+    for key, name in (("Device Utilization %", "util"), ("In use system memory", "mem_used"),
+                      ("Alloc system memory", "mem_alloc")):
+        m = re.search(r'"%s"=(\d+)' % re.escape(key), text)
+        out[name] = int(m.group(1)) if m else None
+    return out
+
+
+def parse_pmset_therm(text):
+    """pmset -g therm -> (cpu speed limit %, thermal warning level); None when unrecorded."""
+    limit = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", text)
+    level = re.search(r"[Tt]hermal [Ww]arning [Ll]evel\s*[=:]\s*(\d+)", text)
+    return (int(limit.group(1)) if limit else None, int(level.group(1)) if level else None)
+
+
+def parse_netstat_listen(text):
+    """netstat -anv -p tcp -> [(ip, port)] of LISTEN sockets ('*' is any address)."""
+    out = []
+    for ln in text.splitlines():
+        f = ln.split()
+        if len(f) < 6 or not f[0].startswith("tcp") or "LISTEN" not in f:
+            continue
+        local = f[3]
+        ip, _, port = local.rpartition(".")
+        if not port.isdigit():
+            continue
+        if ip == "*":
+            ip = "::" if f[0] == "tcp6" else "0.0.0.0"
+        out.append((ip, int(port)))
+    return out
+
+
+def parse_netstat_ib(text):
+    """netstat -ibn -> {iface: (rx_bytes, tx_bytes, [ipv4...])}."""
+    out = {}
+    for ln in text.splitlines()[1:]:
+        f = ln.split()
+        if len(f) < 8:
+            continue
+        name = f[0].rstrip("*")
+        rx, tx, ips = out.get(name, (0, 0, []))
+        if f[2].startswith("<Link#"):
+            try:
+                rx, tx = int(f[-5]), int(f[-2])
+            except ValueError:
+                continue
+        elif re.match(r"^\d+\.\d+\.\d+\.\d+$", f[3]) and f[3] not in ips:
+            ips = ips + [f[3]]
+        out[name] = (rx, tx, ips)
+    return out
+
+
+MAC_SKIP_IFACES = re.compile(r"^(lo|gif|stf|awdl|llw|anpi|ap\d|XHC|pktap|vmenet|bridge)")
+
+
+def mac_iface_kind(name, ips):
+    if name.startswith("utun"):
+        return "tailnet" if any(ip.startswith("100.") for ip in ips) else None   # other VPN tunnels: not shown
+    return "lan"
+
+
+def run_text(argv, timeout=5):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return p.stdout if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def sysctl(name):
+    return run_text(["sysctl", "-n", name]).strip()
+
+
+class MacNode(Node):
+    """An Apple Silicon Mac: the same snapshot, read the macOS way."""
+
+    def _static(self):
+        u = os.uname()
+        ver = run_text(["sw_vers", "-productVersion"]).strip()
+        return {"os": ("macOS " + ver) if ver else "macOS", "kernel": u.release, "arch": u.machine,
+                "hostname": socket.gethostname(), "product": sysctl("hw.model") or None,
+                "cpu_model": sysctl("machdep.cpu.brand_string") or None, "cores": os.cpu_count()}
+
+    def read_cpu_ticks(self):
+        """host_processor_info: per-core user/system/idle/nice ticks, no root."""
+        try:
+            import ctypes
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            libc.mach_host_self.restype = ctypes.c_uint
+            n_cpu, n_info = ctypes.c_uint(), ctypes.c_uint()
+            info = ctypes.POINTER(ctypes.c_int)()
+            if libc.host_processor_info(libc.mach_host_self(), 2, ctypes.byref(n_cpu), ctypes.byref(info),
+                                        ctypes.byref(n_info)) != 0:      # 2: PROCESSOR_CPU_LOAD_INFO
+                return {}
+            out, agg_idle, agg_total = {}, 0, 0
+            for i in range(n_cpu.value):
+                user, system, idle, nice = (info[i * 4 + k] & 0xffffffff for k in range(4))
+                total = user + system + idle + nice
+                out["cpu%d" % i] = (idle, total)
+                agg_idle += idle
+                agg_total += total
+            task = ctypes.c_uint.in_dll(libc, "mach_task_self_")
+            libc.vm_deallocate(task, ctypes.cast(info, ctypes.c_void_p), ctypes.c_size_t(n_info.value * 4))
+            out["cpu"] = (agg_idle, agg_total)
+            return out
+        except (OSError, AttributeError, ValueError):
+            return {}
+
+    def read_load(self):
+        try:
+            return [round(x, 2) for x in os.getloadavg()]
+        except OSError:
+            return None
+
+    def read_mem(self):
+        return mac_mem(parse_vm_stat(run_text(["vm_stat"])), num(sysctl("hw.memsize")),
+                       parse_swapusage(sysctl("vm.swapusage")))
+
+    def read_uptime(self):
+        m = re.search(r"sec = (\d+)", sysctl("kern.boottime"))
+        return (time.time() - int(m.group(1))) if m else None
+
+    def listening(self):
+        return parse_netstat_listen(run_text(["netstat", "-anv", "-p", "tcp"]))
+
+    def sample_containers(self, now, dt):
+        return [], "no docker relay on a Mac: rack monitor runs bare here"
+
+    def sample_gpus(self, containers):
+        g = parse_ioreg_gpu(run_text(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"]))
+        if not g.get("model"):
+            self.gpu_error = "no GPU in the IORegistry"
+            return []
+        self.gpu_error = None
+        limit, level = parse_pmset_therm(run_text(["pmset", "-g", "therm"]))
+        reasons = []
+        if limit is not None and limit < 100:
+            reasons.append("thermal")
+        if level:
+            reasons.append("thermal warning %d" % level)
+        name = g["model"] + (" (%d-core GPU)" % g["cores"] if g.get("cores") else "")
+        return [{"index": 0, "name": name, "util": g.get("util"), "mem_util": None, "temp": None,
+                 "power_w": None, "power_limit_w": None, "fan_pct": None, "sm_clock": None, "sm_clock_max": None,
+                 "pstate": None, "driver": None, "mem_used": g.get("mem_used"), "mem_total": None,
+                 "throttle": reasons, "throttled": bool(reasons), "procs": []}]
+
+    def sample_net(self, dt):
+        cur = parse_netstat_ib(run_text(["netstat", "-ibn"]))
+        out = []
+        for name, (rx, tx, ips) in sorted(cur.items()):
+            if MAC_SKIP_IFACES.match(name) or not ips:
+                continue
+            kind = mac_iface_kind(name, ips)
+            if not kind:
+                continue
+            item = {"iface": name, "kind": kind, "ip": ips[0], "up": True, "speed_mbps": None,
+                    "rx_bps": None, "tx_bps": None}
+            prev = (self.prev_net or {}).get(name)
+            if prev and dt:
+                if rx >= prev[0]:
+                    item["rx_bps"] = round((rx - prev[0]) / dt)
+                if tx >= prev[1]:
+                    item["tx_bps"] = round((tx - prev[1]) / dt)
+            out.append(item)
+        self.prev_net = {k: (v[0], v[1]) for k, v in cur.items()}
+        return out
+
+    def sample_temps(self):
+        return {}
+
+
+def make_node():
+    return MacNode() if sys.platform == "darwin" else Node()
 
 
 # ===================================================================== serve ==
@@ -1035,7 +1321,7 @@ def serve():
     token = load_token()
     if not token and env("MONITOR_INSECURE") != "1":
         sys.exit("rack-monitor: no token (MONITOR_TOKEN_FILE or MONITOR_TOKEN); refusing to serve open telemetry")
-    node = Node()
+    node = make_node()
     node.sample()                       # first sample primes the counters
     step = float(env("MONITOR_SAMPLE_S", "2"))
     threading.Thread(target=sampler_loop, args=(node, step), daemon=True).start()
@@ -1129,7 +1415,7 @@ def main(argv):
     if mode == "docker-relay":
         return docker_relay()
     if mode == "once":
-        node = Node()
+        node = make_node()
         node.sample()
         time.sleep(1.0)
         print(json.dumps(node.sample(), indent=1))

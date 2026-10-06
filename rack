@@ -53,10 +53,19 @@ have_worker() { [ -n "$WORKER_NAMES" ]; }
 run_on_head() {  # bash -c locally so quoting matches the ssh path exactly
   if [ "$IS_HEAD" = 1 ]; then bash -c "$1"; else ssh -n "$HEAD_SSH" "$1"; fi
 }
-# The monitor launcher reads the resolved site, not its own defaults.
+# The monitor launcher reads the resolved site, not its own defaults: the
+# head, and every worker as name<TAB>ssh<TAB>fabric ip.
 monitor_env() {
+  local n ip lines="" first=${WORKER_NAMES%% *}
+  for n in $WORKER_NAMES; do
+    ip=$(inv_get "$n" NODE_FABRIC_IP)
+    [ -n "$ip" ] || [ "$n" != "$first" ] || ip=${WORKER_IP:-}
+    lines="$lines$n	$(node_ssh "$n")	$ip
+"
+  done
   HEAD_IP="${HEAD_IP:-}" HEAD_LABEL="$HEAD_LABEL" WORKER_SSH="$WORKER_SSH" WORKER_IP="${WORKER_IP:-}" \
-    RACK_IS_HEAD="$IS_HEAD" "$@"
+    RACK_IS_HEAD="$IS_HEAD" RACK_MONITOR_WORKERS="$lines" RACK_SERVING="$DGX_SERVE_STATE/serving.json" \
+    RACK_ENGINE_KEY_FILE="$ENGINE_KEY_FILE" "$@"
 }
 # A path built from the laptop's $HOME is not the node's path. Keep $HOME
 # literal so whichever shell finally runs it expands its own.
@@ -100,8 +109,9 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, every node
   rack scrub [--delete]       every trace a video run leaves: list, or wipe
-  rack monitor up|down|status|token|logs
-                              telemetry for every node behind one endpoint (docs/11-monitor.md)
+  rack monitor up [--bare]|down|status|token|logs
+                              telemetry for every node behind one endpoint; bare (no Docker)
+                              on a Mac or WSL2 (docs/11-monitor.md)
 
   --dgx --linux --windows --mac   pull, up, fit, recipes, new: that platform's variant
                               (default: this machine's; another is refused with the fix)

@@ -534,6 +534,8 @@ def plan_native(site, p, c, facts, runtime, replace):
         steps.append(step(h, "weights", "the GGUF file is here", artifact=artifact, file=gguf, cache=site.hf_cache,
                           recipe=c["recipe"], platform=c["platform"]))
         argv = [server, "-m", gguf, "--host", c["host"], "--port", str(c["port"]), "--alias", c["name"]]
+        if "--metrics" not in args:
+            argv.append("--metrics")                 # Prometheus counters, for rack monitor
         if site.key:
             argv += ["--api-key-file", site.key_file]
         mmproj = v.get("ARTIFACT_MMPROJ")
