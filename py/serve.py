@@ -316,6 +316,8 @@ def plan_docker_solo(site, p, c, facts, replace):
     image = image_of(site, v, c["platform"])
     p["image"] = image
     steps = p["steps"]
+    if not replace:
+        steps.append(already_step(site, h, c))
     steps += guard_steps(site, [h], [SOLO, NODE], replace, True, c["port"])
     steps.append(step(h, "image", "the engine image is here", image=image,
                       build=image == engines.VLLM_IMAGE["dgx"] and not v.get("IMAGE") and not site.site_image))
@@ -411,6 +413,11 @@ def plan_cluster(site, p, c, nodes, facts, replace, boot):
         # answers is left alone, whatever started the unit.
         steps.append(step(head, "up-already", "nothing to re-form while the engine answers",
                           url="http://127.0.0.1:%d/health" % c["port"]))
+    elif not replace:
+        # what already serves only gets its boot unit (re)written: turning
+        # linger on later needs no restart
+        steps.append(already_step(site, head, c, then=boot_unit_steps(site, head, c, facts, [])))
+    if boot:
         steps.append(step(head, "reach", "every worker answers over ssh (after a reboot they take a while)",
                           nodes=[n.name for n in nodes[1:]], timeout=600))
     steps += guard_steps(site, nodes, [SOLO, NODE], replace or boot, True, c["port"])
@@ -473,6 +480,14 @@ def plan_cluster(site, p, c, nodes, facts, replace, boot):
     steps += boot_unit_steps(site, head, c, facts, p["notes"])
     steps.append(wait_step(site, head, c["port"], ["docker", "logs", "-f", "--tail", "20", NODE],
                            ["docker", "inspect", "-f", "{{.State.Running}}", NODE], "true"))
+
+
+def already_step(site, h, c, then=()):
+    """rack up of the recipe that is serving and answers: nothing to do but
+    the steps in `then` (a cluster's boot unit)."""
+    return step(h, "up-already", "nothing to do while %s serves and answers" % c["recipe"],
+                url="http://127.0.0.1:%d/health" % c["port"], recipe=c["recipe"],
+                record=os.path.join(site.state, "serving.json"), then=list(then))
 
 
 def boot_unit_steps(site, head, c, facts, notes):
@@ -730,7 +745,7 @@ def render(p, out=sys.stdout):
         elif k == "record":
             body = "write %s" % s["path"]
         elif k == "up-already":
-            body = "stop here when %s answers" % s["url"]
+            body = "stop here when %s answers%s" % (s["url"], " serving %s" % s["recipe"] if s.get("recipe") else "")
         elif k == "remove":
             body = "remove %s" % s["path"]
         else:
@@ -789,6 +804,19 @@ class Executor:
             raise PlanError(s.get("fail") or "%s failed on %s (exit %d)" % (shell(s["argv"]), n.name, r.returncode))
 
     def do_up_already(self, s):
+        if s.get("recipe"):
+            try:
+                rec = json.load(open(s["record"]))
+            except (OSError, ValueError):
+                return
+            if rec.get("recipe") == s["recipe"] and healthy(s["url"]):
+                for t in s.get("then") or []:
+                    if not t.get("quiet"):
+                        self.say("== %s" % t["what"])
+                    getattr(self, "do_" + t["kind"].replace("-", "_"))(t)
+                raise Done("%s is serving already (since %s): nothing to do; rack up --replace restarts it"
+                           % (s["recipe"], rec.get("started_at") or "?"))
+            return
         if healthy(s["url"]):
             raise Done("the engine already answers (%s): nothing to re-form" % s["url"])
 

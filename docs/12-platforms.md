@@ -216,6 +216,8 @@ engine.
   with linger (`sudo loginctl enable-linger $USER`, then `rack up` again):
   without it the user's systemd starts at a login rather than at boot, so the
   containers come back after a reboot but the engine waits for a `rack up`.
+  `rack up` of the recipe already serving changes nothing but that unit, so
+  turning linger on later needs no restart: `rack up <recipe>` again.
 - **llama.cpp, natively** (mac, windows, linux): the pinned build b11430 from
   ggml-org's releases, verified by sha256 and unpacked under
   `~/.local/state/dgx-serve/engines/`. CUDA builds come with their cudart bundle

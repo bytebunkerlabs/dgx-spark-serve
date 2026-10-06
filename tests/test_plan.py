@@ -233,6 +233,17 @@ class Plans(Base):
         init = {c["check"]: c for c in rack_json(m.rack("init", "--json"))["checks"]}
         self.assertEqual(init["linger"]["status"], "warn")
 
+    def test_up_of_what_serves_only_refreshes_its_boot_unit(self):
+        m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
+        self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        m.cmd("loginctl", "echo yes")
+        first = self.plan(m, "phase2-gpt-oss-120b")["steps"][0]
+        self.assertEqual((first["kind"], first["recipe"]), ("up-already", "phase2-gpt-oss-120b"))
+        self.assertEqual([t["kind"] for t in first["then"]], ["write", "run", "run"])
+        self.assertTrue(first["then"][0]["path"].endswith("dgx-serve-boot.service"))
+        replace = self.plan(m, "phase2-gpt-oss-120b", "--replace")["steps"]
+        self.assertNotIn("up-already", [s["kind"] for s in replace])          # --replace restarts it
+
     def test_boot_starts_by_asking_whether_the_engine_answers(self):
         m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
         self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
@@ -352,6 +363,31 @@ class Execute(Base):
         down = dict(up, url="http://127.0.0.1:%d/health" % free_port())         # after a reboot: nothing answers
         with self.assertRaises(serve.PlanError):
             serve.Executor(site, {"steps": [down] + stop}, io.StringIO()).execute()
+
+    def test_up_of_the_serving_recipe_does_nothing_else(self):
+        import types
+        sys.path.insert(0, os.path.join(ROOT, "py"))
+        import serve
+        here = types.SimpleNamespace(name="box", local=True)
+        site = types.SimpleNamespace(nodes=[here], head=here)
+        tmp = self.machine(dgx_spark).home
+        record, unit = os.path.join(tmp, "serving.json"), os.path.join(tmp, "boot.service")
+        stop = [{"node": "box", "kind": "run", "what": "tear down", "argv": ["false"]}]
+        up = {"node": "box", "kind": "up-already", "what": "serving?", "recipe": "glm",
+              "url": "http://127.0.0.1:%d/health" % self.port, "record": record,
+              "then": [{"node": "box", "kind": "write", "what": "the boot unit", "path": unit, "content": "x"}]}
+        with open(record, "w") as f:
+            json.dump({"recipe": "glm", "started_at": "today"}, f)
+        out = io.StringIO()
+        self.assertFalse(serve.Executor(site, {"steps": [up] + stop}, out).execute())
+        self.assertIn("glm is serving already", out.getvalue())
+        self.assertEqual(open(unit).read(), "x")                               # the boot unit, refreshed
+        os.remove(unit)
+        with open(record, "w") as f:
+            json.dump({"recipe": "another"}, f)                                # something else serves: on to the guard
+        with self.assertRaises(serve.PlanError):
+            serve.Executor(site, {"steps": [up] + stop}, io.StringIO()).execute()
+        self.assertFalse(os.path.exists(unit))
 
     def test_dgx_solo_up_and_down(self):
         m = self.machine(dgx_spark)
