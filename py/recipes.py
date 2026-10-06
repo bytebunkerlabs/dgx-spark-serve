@@ -26,7 +26,7 @@ PLATFORMS = ["dgx", "linux", "windows", "mac"]
 FLAT_PLATFORMS = ["dgx", "linux"]
 ENGINES = ["vllm", "llamacpp"]
 ROLES = ["chat", "tools", "reasoning", "vision", "code", "embedding", "rerank", "draft"]
-SCALARS = ["MODEL", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
+SCALARS = ["MODEL", "MODEL_REVISION", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
            "ROLES", "WEIGHTS_GB", "SERVED_NAME"]
 ARRAYS = ["SERVE_ARGS", "ENV_EXTRA", "MODS"]
 OWNED_FLAGS = ["--host", "--port", "--api-key", "--api-key-file"]
@@ -432,6 +432,33 @@ def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, on
     return rec, problems
 
 
+def pull_spec(file, recipe_dir, root, platform):
+    """What `rack pull <recipe>` fetches for one variant: the repo, the
+    revision, and either exact files (llama.cpp's GGUF) or vLLM's weights."""
+    flat = os.path.basename(file) not in [p + ".env" for p in PLATFORMS]
+    v = source(file, recipe_dir, root)
+    engine = engine_of(v, platform, flat)
+    if engine == "llamacpp":
+        a = v.get("ARTIFACT") or ""
+        if not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):
+            raise ValueError("ARTIFACT must be <org>/<repo>/<file>.gguf (got: %s)" % (a or "nothing"))
+        org, repo, path = a.split("/", 2)
+        rev = v.get("ARTIFACT_REVISION") or "main"
+        specs = [{"repo": org + "/" + repo, "revision": rev, "files": [path]}]
+        mm = v.get("ARTIFACT_MMPROJ")
+        if mm:
+            o2, r2, p2 = mm.split("/", 2)
+            if o2 + "/" + r2 == specs[0]["repo"]:
+                specs[0]["files"].append(p2)
+            else:
+                specs.append({"repo": o2 + "/" + r2, "revision": "main", "files": [p2]})
+        return {"engine": engine, "pulls": specs}
+    model = v.get("MODEL") or ""
+    if model.count("/") != 1 or model.startswith("/"):
+        raise ValueError("MODEL is not a Hugging Face repo (%s): nothing to fetch" % (model or "nothing"))
+    return {"engine": engine, "pulls": [{"repo": model, "revision": v.get("MODEL_REVISION") or "main", "weights": True}]}
+
+
 def read_index(stream):
     out = []
     for line in stream:
@@ -446,6 +473,13 @@ def read_index(stream):
 
 def main(argv):
     import argparse
+    if argv[:1] == ["pull-spec"]:                  # pull-spec <file> <recipe_dir> <root> <platform>
+        try:
+            print(json.dumps(pull_spec(*argv[1:5])))
+            return 0
+        except (ValueError, RuntimeError) as e:
+            sys.stderr.write("%s\n" % e)
+            return 1
     ap = argparse.ArgumentParser(prog="recipes.py")
     ap.add_argument("command", choices=["list", "check"])
     ap.add_argument("--json", action="store_true")

@@ -106,6 +106,10 @@ class FakeMachine:
             "DGX_SERVE_STATE": os.path.join(self.home, ".local", "state", "dgx-serve"),
             # the checkout's .env, if a test writes one (never the repo's own)
             "DGX_SERVE_DOTENV": os.path.join(self.home, "checkout.env"),
+            # nothing a test runs may reach the internet: the hub is a dead
+            # port unless a test brings its own, and downloads stay local
+            "HF_ENDPOINT": "http://127.0.0.1:9",
+            "RACK_OFFLINE": "1",
             "LANG": "C",
             "TERM": "dumb",
         }

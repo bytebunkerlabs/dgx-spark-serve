@@ -132,12 +132,11 @@ class Flags(Base):
         self.assertNotIn("phase1", mac)
 
     def test_pull_takes_a_recipe_or_a_repo(self):
+        # (downloads themselves: test_hfget.py, against a fake hub)
         m = self.machine(dgx_spark)
-        d = rack_json(m.rack("pull", "phase1", "--plan", "--json"))
-        self.assertEqual((d["model"], d["platform"]), ("Qwen/Qwen3-8B", "dgx"))
-        d = rack_json(m.rack("pull", "org/any", "--plan", "--json"))
-        self.assertEqual(d["model"], "org/any")
         self.fails(m.rack("pull", "h3", "--plan"), "is not a Hugging Face repo")
+        self.fails(m.rack("pull", "nope", "--plan"), "no such recipe: nope")
+        self.fails(m.rack("pull", "phase1", "--plan"), "cannot reach http://127.0.0.1:9")
 
     def test_windows_needs_its_own_variant(self):
         m = self.machine(wsl_2070)

@@ -354,8 +354,9 @@ class Execute(Base):
         m.logging_cmd("docker", 'case "$1" in image) exit 0;; esac')
         r = m.rack("up", "phase1", extra_env=self.env())
         self.assertIn("not here yet: rack pull phase1-qwen3-8b --dgx", r.stdout)
-        self.assertTrue(any("hf download 'Qwen/Qwen3-8B'" in c for c in m.log("docker")))
-        self.assertNotEqual(r.returncode, 0)                            # the stand-in downloads nothing
+        self.assertIn("cannot reach http://127.0.0.1:9", r.stderr)      # tests never reach the real hub
+        self.assertIn("rack pull phase1-qwen3-8b failed", r.stderr)
+        self.assertFalse([c for c in m.log("docker") if c.startswith("run")])
 
 
 class Down(Base):

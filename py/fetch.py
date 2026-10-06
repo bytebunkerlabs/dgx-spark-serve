@@ -57,6 +57,9 @@ def download(url, dest, sha256=None, size=None, token=None, progress=None, retri
     progress(done, total) is called as bytes arrive."""
     if os.path.exists(dest) and sha256 and sha256_file(dest) == sha256:
         return dest
+    host = urllib.request.urlparse(url).hostname or ""
+    if os.environ.get("RACK_OFFLINE") == "1" and host not in ("127.0.0.1", "localhost"):
+        raise FetchError("%s: RACK_OFFLINE=1, not downloading" % url)
     os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
     part = dest + ".part"
     attempt = 0

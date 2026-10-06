@@ -224,62 +224,61 @@ model_ref() {
   printf '%s' "$id"
 }
 
+# rack pull <recipe|org/name>: exactly what that platform's variant serves
+# from (vLLM's safetensors, or llama.cpp's one GGUF file), into the HF cache
+# with py/hfget.py (resumable, verified against the hub's hashes, disk checked
+# first), then replicated to every worker and verified there.
 cmd_pull() {
   flags_parse "$@"
   set -- ${REST[@]+"${REST[@]}"}
-  [ $# -gt 0 ] || die "usage: rack pull <recipe|org/model> [--dgx|--linux|--windows|--mac] [--plan]"
+  [ $# -eq 1 ] || die "usage: rack pull <recipe|org/model> [--dgx|--linux|--windows|--mac] [--plan [--json]]"
   flags_target pull
-  local id; id=$(model_ref "$1")
-  if [ "$PLAN" = 1 ]; then
-    if [ "$JSON" = 1 ]; then
-      printf '{"schema":%s,"command":"pull","platform":%s,"model":%s,"cache":%s,"replicate_to":%s}\n' "$RACK_JSON_SCHEMA" \
-        "$(json_str "$TARGET_PLATFORM")" "$(json_str "$id")" "$(json_str "$HF_CACHE")" "$(json_str "$WORKER_NAMES")"
-    else
-      bold "plan: rack pull $1 --$TARGET_PLATFORM (nothing was run)"
-      printf '  model      %s\n  into       %s\n' "$id" "$HF_CACHE"
-      [ -z "$WORKER_NAMES" ] || printf '  then       replicate to %s, verify shards on every node\n' "$WORKER_NAMES"
-    fi
-    return
-  fi
-  case "$TARGET_PLATFORM" in
-    windows|mac) die "downloading for $(platform_title "$TARGET_PLATFORM") needs rack's own downloader, which is not in this build yet" ;;
+  local ref=$1 spec id
+  case "$ref" in
+    */*) spec="{\"engine\":\"vllm\",\"pulls\":[{\"repo\":$(json_str "$ref"),\"revision\":\"main\",\"weights\":true}]}" ;;
+    *)
+      recipe_resolve "$ref" "$TARGET_PLATFORM"
+      check_resolved >/dev/null || { check_resolved >&2 || true; die "$RECIPE_NAME fails rack recipes check: fix it first"; }
+      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM") \
+        || die "cannot pull $RECIPE_NAME for $TARGET_PLATFORM" ;;
   esac
-  docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing — run: rack build"
-  bold "downloading $id"
-  docker run --rm -v "$HF_CACHE:/root/.cache/huggingface" --entrypoint bash "$IMAGE" \
-    -c "hf download '$id'"
-  # The container downloads as root; anything it creates 600 (hub metadata
-  # like trees/*.json) is unreadable to the host user and kills the rsync
-  # replication mid-flight (measured: exit 23, and set -e then skips shard
-  # verification — the worst part). Hand the tree back before syncing.
-  docker run --rm -v "$HF_CACHE:/cache" --entrypoint chown "$IMAGE" \
-    -R "$(id -u):$(id -g)" "/cache/hub/models--${id//\//--}"
-  if have_worker; then
+  HF_CACHE=$HF_CACHE DGX_SERVE_CONFIG=$DGX_SERVE_CONFIG python3 "$ROOT/py/pull.py" "$spec" "$PLAN" "$JSON" \
+    "$WORKER_NAMES" "$TARGET_PLATFORM" || exit 1
+  [ "$PLAN" = 1 ] && return 0
+  id=$(printf '%s' "$spec" | python3 -c 'import json,sys; p=json.load(sys.stdin)["pulls"][0]; print(p["repo"] if p.get("weights") else "")')
+  [ -n "$id" ] || return 0                     # a GGUF file: verified by its hash already
+  if have_worker && { [ "$TARGET_PLATFORM" = dgx ] || [ "$TARGET_PLATFORM" = linux ]; }; then
     bold "replicating to $WORKER_NAMES over the fabric"
-    "$ROOT/scripts/sync-model.sh" "$id" || warn "replication failed: fix it, then scripts/sync-model.sh $id"
+    "$ROOT/scripts/sync-model.sh" "$id" || die "replication failed: fix it, then scripts/sync-model.sh $id"
   fi
   cmd_verify "$id"
 }
 
 cmd_verify() {
-  local id=${1:?} dir="models--${1//\//--}"
+  local id=${1:?usage: rack verify <org/model>} dir="models--${1//\//--}"
   bold "verifying shards"
+  # the snapshot refs/main names (else the newest), every shard its index lists
   local script="
-import json,glob,os,sys
-g=glob.glob(os.path.expanduser('$HF_CACHE/hub/$dir/snapshots/*/'))
-if not g: print('  MISSING on this node'); sys.exit(1)
-p=g[0]; f=p+'model.safetensors.index.json'
-if not os.path.exists(f): print('  single-file model, no index'); sys.exit(0)
-i=json.load(open(f)); s=sorted(set(i['weight_map'].values()))
-m=[x for x in s if not os.path.exists(p+x)]
-print(f'  {len(s)} shards, {len(m)} missing')
+import glob,json,os,sys
+d=os.path.join(sys.argv[1],'hub','$dir')
+try: snap=os.path.join(d,'snapshots',open(os.path.join(d,'refs','main')).read().strip(),'')
+except OSError: snap=None
+if not snap or not os.path.isdir(snap):
+    g=sorted(glob.glob(os.path.join(d,'snapshots','*','')),key=os.path.getmtime)
+    if not g: print('MISSING on this node'); sys.exit(1)
+    snap=g[-1]
+f=snap+'model.safetensors.index.json'
+if not os.path.exists(f): print('single-file model, no index'); sys.exit(0)
+s=sorted(set(json.load(open(f))['weight_map'].values()))
+m=[x for x in s if not os.path.exists(snap+x)]
+print('%d shards, %d missing' % (len(s),len(m)))
 sys.exit(1 if m else 0)"
   local me n; me=$(local_label)
-  printf '  %s: ' "$me"; python3 -c "$script" || die "incomplete on $me"
+  printf '  %s: ' "$me"; python3 -c "$script" "$HF_CACHE" || die "incomplete on $me"
   for n in $WORKER_NAMES; do
     printf '  %s: ' "$n"
     node_up "$n" || { echo "unreachable over ssh"; die "could not verify $n"; }
-    ssh -n "$(node_ssh "$n")" "python3 -c \"$script\"" || die "incomplete on $n"
+    ssh -n "$(node_ssh "$n")" "python3 -c $(printf %q "$script") $(printf %q "$(node_hf_cache "$n")")" || die "incomplete on $n"
   done
 }
 
