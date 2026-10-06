@@ -186,7 +186,7 @@ cmd_fit() {
     *)
       recipe_resolve "$ref" "$TARGET_PLATFORM"
       check_resolved >/dev/null || { check_resolved >&2 || true; die "$RECIPE_NAME fails rack recipes check: fix it first"; }
-      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM") \
+      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM" "$DGX_SERVE_CONFIG") \
         || die "cannot read $RECIPE_NAME for $TARGET_PLATFORM"
       spec=$(printf '%s' "$spec" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["recipe"]=sys.argv[1]; print(json.dumps(d))' "$RECIPE_NAME") ;;
   esac
@@ -225,7 +225,7 @@ cmd_pull() {
     *)
       recipe_resolve "$ref" "$TARGET_PLATFORM"
       check_resolved >/dev/null || { check_resolved >&2 || true; die "$RECIPE_NAME fails rack recipes check: fix it first"; }
-      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM") \
+      spec=$(python3 "$ROOT/py/recipes.py" pull-spec "$RECIPE_FILE" "$RECIPE_DIR" "$ROOT" "$TARGET_PLATFORM" "$DGX_SERVE_CONFIG") \
         || die "cannot pull $RECIPE_NAME for $TARGET_PLATFORM" ;;
   esac
   HF_CACHE=$HF_CACHE DGX_SERVE_CONFIG=$DGX_SERVE_CONFIG python3 "$ROOT/py/pull.py" "$spec" "$PLAN" "$JSON" \
@@ -286,11 +286,20 @@ cmd_models() {
 }
 
 # The file a recipe sources, other than its model.env: a flat parent
-# (`. recipes/parent.env`) or a sibling variant (`. "$RECIPE_DIR/dgx.env"`).
+# (`. recipes/parent.env`, yours before the checkout's, as py/recipes.py
+# parent_file) or a sibling variant (`. "$RECIPE_DIR/dgx.env"`).
 recipe_parent() {
-  local p
+  local p e
   p=$(sed -n 's|^\. *\(recipes/[^ ]*\.env\).*|\1|p' "$1" | head -1)
-  [ -n "$p" ] && { printf '%s' "$p"; return; }
+  if [ -n "$p" ]; then
+    e=${p#recipes/}; e=${e%%/*}
+    if [ -e "$DGX_SERVE_CONFIG/recipes/$e" ] || [ -L "$DGX_SERVE_CONFIG/recipes/$e" ]; then
+      printf '%s/%s' "$DGX_SERVE_CONFIG" "$p"
+    else
+      printf '%s/%s' "$ROOT" "$p"
+    fi
+    return
+  fi
   # shellcheck disable=SC2016  # $RECIPE_DIR is the text being matched
   p=$(sed -n 's|^\. *"\$RECIPE_DIR/\([A-Za-z0-9._-]*\.env\)".*|\1|p' "$1" | grep -v '^model\.env$' | head -1 || true)
   [ -n "$p" ] && printf '%s/%s' "$(dirname "$1")" "$p"
@@ -331,7 +340,7 @@ cmd_recipes() {
     [ -n "$names" ] || { dim "  none yet — try: rack new <name> <org/model>${WANT_PLATFORM:+ --$WANT_PLATFORM}"; return 0; }
   fi
   # shellcheck disable=SC2086  # names are recipe names: no spaces
-  recipe_index $names | python3 "$ROOT/py/recipes.py" list --root "$ROOT" --here "$here" --budget-mb "${budget:-0}" \
+  recipe_index $names | python3 "$ROOT/py/recipes.py" list --root "$ROOT" --config "$DGX_SERVE_CONFIG" --here "$here" --budget-mb "${budget:-0}" \
     ${WANT_PLATFORM:+--platform "$WANT_PLATFORM"} ${json:+"$json"}
 }
 
@@ -343,7 +352,7 @@ check_resolved() {
     dgx.env|linux.env|windows.env|mac.env) [ -f "$RECIPE_DIR/model.env" ] && loc=$RECIPE_DIR ;;
   esac
   printf '%s\t%s\trepo\n' "$RECIPE_NAME" "$loc" \
-    | python3 "$ROOT/py/recipes.py" check --root "$ROOT" --platform "$TARGET_PLATFORM"
+    | python3 "$ROOT/py/recipes.py" check --root "$ROOT" --config "$DGX_SERVE_CONFIG" --platform "$TARGET_PLATFORM"
 }
 
 # rack recipes check [<name>...]: what may be in a recipe, and whether each
@@ -356,7 +365,7 @@ recipes_check() {
     names=$(recipe_names)
   fi
   # shellcheck disable=SC2086  # names are recipe names: no spaces
-  recipe_index $names | python3 "$ROOT/py/recipes.py" check --root "$ROOT"
+  recipe_index $names | python3 "$ROOT/py/recipes.py" check --root "$ROOT" --config "$DGX_SERVE_CONFIG"
 }
 
 # ---------------------------------------------------------------- new ------

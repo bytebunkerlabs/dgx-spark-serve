@@ -126,9 +126,9 @@ def hub_dir(cache, repo):
 
 
 # ---------------------------------------------------------------- planning --
-def load_recipe(name, file, recipe_dir, platform, root):
+def load_recipe(name, file, recipe_dir, platform, root, config=None):
     flat = os.path.basename(file) not in ("dgx.env", "linux.env", "windows.env", "mac.env")
-    v = recipes.source(file, recipe_dir, root)
+    v = recipes.source(file, recipe_dir, root, config)
     d = recipes.describe(v, platform, flat)
     return v, d, flat
 
@@ -182,7 +182,7 @@ def mem_cap_gb(site, platform, facts):
 
 
 def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace=False, boot=False, assumed=False):
-    v, d, flat = load_recipe(recipe_name, recipe_file, recipe_dir, platform, site.root)
+    v, d, flat = load_recipe(recipe_name, recipe_file, recipe_dir, platform, site.root, site.config)
     unanswered = sorted(k for k, val in v.items() if "FILL_ME" in (" ".join(val) if isinstance(val, list) else val))
     if unanswered:
         raise PlanError("%s still has FILL_ME in %s: answer its questions first (docs/05-recipe-method.md)"

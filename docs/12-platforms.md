@@ -118,6 +118,9 @@ recipes/qwen3-8b/mac.env       ENGINE=llamacpp, ARTIFACT, SERVE_ARGS
 
 Each platform file sources `"$RECIPE_DIR/model.env"`. A flat `recipes/<name>.env`
 from before 1.0 is a vLLM container recipe and keeps working on dgx and linux.
+A flat recipe built on another (`. recipes/<parent>.env`) reads the recipe rack
+would serve as `<parent>`: yours in `~/.config/dgx-serve/recipes` first, then
+the checkout's, so your own recipes can build on each other.
 
 ```bash
 rack recipes                       # every recipe and its platforms

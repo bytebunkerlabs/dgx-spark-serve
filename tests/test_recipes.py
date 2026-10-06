@@ -154,6 +154,43 @@ class Check(Base):
             self.assertIn(msg, out)
 
 
+class Parents(Base):
+    """`. recipes/<parent>.env` reads the recipe rack would serve as <parent>:
+    yours ($DGX_SERVE_CONFIG/recipes) first, then the checkout's."""
+
+    def flat(self, m, name, text):
+        write(m.config_path("recipes", name + ".env"), text)
+
+    def models(self, m):
+        d = rack_json(m.rack("recipes", "--json"))
+        return {x["name"]: x["model"] for x in d["recipes"]}
+
+    def test_yours_on_yours_and_yours_on_the_checkouts(self):
+        m = self.machine(dgx_spark)
+        self.flat(m, "big", "MODEL=org/big\nSERVE_ARGS=(--served-model-name big)\n")
+        self.flat(m, "big-ab", ". recipes/big.env\nSERVE_ARGS+=(--served-model-name big-ab)\n")
+        self.flat(m, "big-ab-sage", ". recipes/big-ab.env\n")                   # two levels down
+        self.flat(m, "gpt-mine", ". recipes/phase2-gpt-oss-120b-solo.env\n")    # a parent in the checkout
+        r = m.rack("recipes", "check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        got = self.models(m)
+        self.assertEqual((got["big-ab"], got["big-ab-sage"], got["gpt-mine"]),
+                         ("org/big", "org/big", "openai/gpt-oss-120b"))
+
+    def test_yours_hides_the_checkouts_as_a_parent_too(self):
+        m = self.machine(dgx_spark)
+        self.flat(m, "phase2-gpt-oss-120b-solo", "MODEL=me/mine\n")
+        self.flat(m, "gpt-mine", ". recipes/phase2-gpt-oss-120b-solo.env\n")
+        self.assertEqual(self.models(m)["gpt-mine"], "me/mine")
+
+    def test_a_missing_parent_is_named(self):
+        m = self.machine(dgx_spark)
+        self.flat(m, "orphan", ". recipes/nowhere.env\n")
+        r = m.rack("recipes", "check", "orphan")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("recipes/nowhere.env, which does not exist", r.stdout)
+
+
 class New(Base):
     def test_new_recipe_for_this_machine_goes_to_your_recipes(self):
         m = self.machine(mac_m4)

@@ -217,6 +217,22 @@ class Plans(Base):
         scripts = {s["node"]: s["content"] for s in steps(p, "write") if s.get("container") == "serve_node"}
         self.assertIn("--served-model-name big-one", scripts["spark-1"])     # its own served name, kept
 
+    def test_a_private_recipe_on_a_private_parent(self):
+        # `. recipes/base.env` in the overlay reads the overlay's base (the checkout has none)
+        m = self.machine(dgx_spark, name="burhan", ips=[("enp1s0f0np0", "192.168.100.1")])
+        self.machine(dgx_spark, host="spark-2", name="aleem", ips=[("enp1s0f0np0", "192.168.100.2")])
+        os.makedirs(m.config_path("recipes"), exist_ok=True)
+        for name, text in (("base", "MODEL=org/Big\nSERVE_ARGS=(--tensor-parallel-size 2 --served-model-name big)\n"),
+                           ("base-ab", ". recipes/base.env\nSERVE_ARGS+=(--served-model-name big-ab)\n")):
+            with open(m.config_path("recipes", name + ".env"), "w") as f:
+                f.write(text)
+        p = self.plan(m, "base-ab")
+        scripts = {s["node"]: s["content"] for s in steps(p, "write") if s.get("container") == "serve_node"}
+        self.assertIn("org/Big", scripts["spark-1"])
+        self.assertIn("--served-model-name big-ab", scripts["spark-1"])          # the last one given wins
+        self.assertNotIn("--served-model-name big ", scripts["spark-1"])
+        self.assertIn("--nnodes 2", scripts["spark-1"])                           # TP=2 from the parent
+
     def four_sparks(self):
         m = self.machine(dgx_spark, name="s1", ips=[("f0", "10.9.0.1")])
         self.assertEqual(m.rack("init", "--name", "s1").returncode, 0)

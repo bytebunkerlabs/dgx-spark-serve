@@ -12,12 +12,16 @@ location is a folder (recipes v2: model.env plus <platform>.env) or a flat
 Recipes are bash and rack sources them, so a recipe may only assign
 variables and source its own model.env (or, flat, a parent recipe). Nothing
 here sources a file until it, and everything it sources, passed that check.
+A parent (`. recipes/<parent>.env`) is the recipe rack would serve as
+<parent>: yours ($DGX_SERVE_CONFIG/recipes) hide the checkout's.
 """
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rackfit  # noqa: E402
@@ -156,7 +160,16 @@ def unquote(w):
     return w
 
 
-def check_file(path, recipe_dir, root, problems, flat):
+def parent_file(target, root, config):
+    """Where `. recipes/<parent>.env` leads: into your recipes when you have
+    an entry of that name (a file or a folder), else into the checkout's."""
+    entry = target.split("/")[1]
+    if config and os.path.lexists(os.path.join(config, "recipes", entry)):
+        return os.path.join(config, target)
+    return os.path.join(root, target)
+
+
+def check_file(path, recipe_dir, root, problems, flat, config=None):
     """Lexical rules for one file. Returns the files it sources, resolved."""
     try:
         text = open(path).read()
@@ -183,7 +196,7 @@ def check_file(path, recipe_dir, root, problems, flat):
                     continue
                 sources.append(os.path.join(recipe_dir, rel))
             elif re.match(r"^recipes/[A-Za-z0-9._/-]+\.env$", target) and ".." not in target:
-                sources.append(os.path.join(root, target))
+                sources.append(parent_file(target, root, config))
             else:
                 problems.error(path, line, "sources %s: a recipe may source \"$RECIPE_DIR/model.env\" "
                                            "(or, flat, recipes/<parent>.env), nothing else" % target)
@@ -222,11 +235,33 @@ done
 ''' % (" ".join(SCALARS), " ".join(ARRAYS))
 
 
-def source(path, recipe_dir, root):
+def recipes_view(root, config):
+    """A folder whose recipes/ links the checkout's entries with yours over
+    them, so bash's `. recipes/<parent>.env` opens what parent_file names."""
+    view = tempfile.mkdtemp(prefix="dgx-serve-recipes-")
+    os.mkdir(os.path.join(view, "recipes"))
+    for base in (root, config):                  # yours last: they win
+        d = os.path.join(base, "recipes")
+        if not os.path.isdir(d):
+            continue
+        for n in os.listdir(d):
+            link = os.path.join(view, "recipes", n)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.join(d, n), link)
+    return view
+
+
+def source(path, recipe_dir, root, config=None):
     """The variables a recipe file sets, by sourcing it in a clean bash."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/"), "LANG": "C"}
-    p = subprocess.run(["bash", "-c", DUMP, "_", path, recipe_dir, root], env=env,
-                       capture_output=True, timeout=30)
+    view = recipes_view(root, config) if config and os.path.isdir(os.path.join(config, "recipes")) else None
+    try:
+        p = subprocess.run(["bash", "-c", DUMP, "_", path, recipe_dir, view or root], env=env,
+                           capture_output=True, timeout=30)
+    finally:
+        if view:
+            shutil.rmtree(view, ignore_errors=True)
     if p.returncode != 0:
         raise RuntimeError("sourcing %s failed (exit %d)" % (path, p.returncode))
     parts = p.stdout.decode("utf-8", "replace").split("\0")
@@ -368,41 +403,41 @@ def variants_of(location):
             if os.path.exists(os.path.join(location, p + ".env"))]
 
 
-def checked_closure(path, recipe_dir, root, problems, flat, seen=None):
+def checked_closure(path, recipe_dir, root, problems, flat, seen=None, config=None):
     """Check a file and everything it sources; True when sourcing is safe."""
     seen = seen if seen is not None else set()
     if path in seen:
         return True
     seen.add(path)
     before = len(problems.errors())
-    for s in check_file(path, recipe_dir, root, problems, flat):
+    for s in check_file(path, recipe_dir, root, problems, flat, config):
         if not os.path.exists(s):
             problems.error(path, 0, "sources %s, which does not exist" % s)
             continue
-        checked_closure(s, os.path.dirname(s) if not flat else recipe_dir, root, problems, flat, seen)
+        checked_closure(s, os.path.dirname(s) if not flat else recipe_dir, root, problems, flat, seen, config)
     return len(problems.errors()) == before
 
 
-def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, only=None):
+def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, only=None, config=None):
     problems = Problems()
     flat = location.endswith(".env")
     rec = {"name": name, "source": source_kind, "layout": "flat" if flat else "v2", "location": location,
            "platforms": [], "model": None, "roles": [], "dialect": {}, "variants": {}}
     if not flat:
-        checked_closure(os.path.join(location, "model.env"), location, root, problems, flat)
+        checked_closure(os.path.join(location, "model.env"), location, root, problems, flat, config=config)
     shared = None
     for platform, f, is_flat in variants_of(location):
         if only and platform != only:
             continue
         recipe_dir = os.path.dirname(f)
         var = {"file": f}
-        if not checked_closure(f, recipe_dir, root, problems, is_flat):
+        if not checked_closure(f, recipe_dir, root, problems, is_flat, config=config):
             var["error"] = "fails rack recipes check"
             rec["variants"][platform] = var
             rec["platforms"].append(platform)
             continue
         try:
-            v = source(f, recipe_dir, root)
+            v = source(f, recipe_dir, root, config)
         except (RuntimeError, subprocess.TimeoutExpired) as e:
             problems.error(f, 0, str(e))
             var["error"] = str(e)
@@ -433,11 +468,11 @@ def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, on
     return rec, problems
 
 
-def pull_spec(file, recipe_dir, root, platform):
+def pull_spec(file, recipe_dir, root, platform, config=None):
     """What `rack pull <recipe>` fetches for one variant: the repo, the
     revision, and either exact files (llama.cpp's GGUF) or vLLM's weights."""
     flat = os.path.basename(file) not in [p + ".env" for p in PLATFORMS]
-    v = source(file, recipe_dir, root)
+    v = source(file, recipe_dir, root, config)
     engine = engine_of(v, platform, flat)
     d = describe(v, platform, flat)
     if engine == "llamacpp":
@@ -478,9 +513,9 @@ def read_index(stream):
 
 def main(argv):
     import argparse
-    if argv[:1] == ["pull-spec"]:                  # pull-spec <file> <recipe_dir> <root> <platform>
+    if argv[:1] == ["pull-spec"]:                  # pull-spec <file> <recipe_dir> <root> <platform> [<config>]
         try:
-            print(json.dumps(pull_spec(*argv[1:5])))
+            print(json.dumps(pull_spec(*argv[1:6])))
             return 0
         except (ValueError, RuntimeError) as e:
             sys.stderr.write("%s\n" % e)
@@ -492,12 +527,13 @@ def main(argv):
     ap.add_argument("--here")
     ap.add_argument("--budget-mb", type=int)
     ap.add_argument("--root", default=os.getcwd())
+    ap.add_argument("--config", help="$DGX_SERVE_CONFIG: where your own recipes are")
     a = ap.parse_args(argv)
     index = read_index(sys.stdin)
     recs, all_problems = [], []
     for name, location, kind in index:
         only = a.platform if a.command == "check" else None
-        rec, problems = read_recipe(name, location, kind, a.root, a.here, a.budget_mb, only)
+        rec, problems = read_recipe(name, location, kind, a.root, a.here, a.budget_mb, only, a.config)
         recs.append(rec)
         all_problems.extend(problems.items)
 
