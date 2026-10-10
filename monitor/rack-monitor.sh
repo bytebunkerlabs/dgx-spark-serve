@@ -52,9 +52,15 @@ RELAY_UNIT=rack-monitor-relay.service
 PLIST=$HOME/Library/LaunchAgents/$MON_LABEL.plist
 UNIT_DIR=$HOME/.config/systemd/user
 
-bold() { printf '\033[1m%s\033[0m\n' "$*"; }
-dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
-die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+# colour for a person at a terminal; plain for a pipe or an app (and NO_COLOR)
+_C=0 _CE=0
+if [ -z "${NO_COLOR:-}" ]; then
+  if [ -t 1 ]; then _C=1; fi
+  if [ -t 2 ]; then _CE=1; fi
+fi
+bold() { if [ "$_C" = 1 ]; then printf '\033[1m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+dim()  { if [ "$_C" = 1 ]; then printf '\033[2m%s\033[0m\n' "$*"; else printf '%s\n' "$*"; fi; }
+die()  { if [ "$_CE" = 1 ]; then printf '\033[31m%s\033[0m\n' "$*" >&2; else printf '%s\n' "$*" >&2; fi; exit 1; }
 
 # rack passes RACK_IS_HEAD (its inventory knows); run directly, owning the
 # head's fabric IP is the test.

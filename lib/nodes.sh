@@ -357,8 +357,8 @@ EOT
       [ -n "$st" ] || continue
       case "$st" in
         ok)   printf '  ok    %-22s %s\n' "$what" "$detail" ;;
-        warn) printf '\033[33m  warn  %-22s %s\033[0m\n' "$what" "$detail" ;;
-        fail) printf '\033[31m  FAIL  %-22s %s\033[0m\n' "$what" "$detail" ;;
+        warn) paint 33 "$(printf '  warn  %-22s %s' "$what" "$detail")" ;;
+        fail) paint 31 "$(printf '  FAIL  %-22s %s' "$what" "$detail")" ;;
       esac
     done <<EOT
 $INIT_CHECKS

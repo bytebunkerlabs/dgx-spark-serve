@@ -34,6 +34,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fetch  # noqa: E402
+import term  # noqa: E402
 
 WEIGHT_FILES = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.py", "*.jinja", "*.md",
                 "tokenizer*", "*.vocab", "merges.txt", "*.spm"]
@@ -252,7 +253,7 @@ def main(argv):
     try:
         s = pull(a.repo, a.revision, a.files, a.weights, a.cache, a.jobs, a.reserve_gb, a.dry_run, a.quiet or a.json)
     except (HubError, fetch.FetchError) as e:
-        sys.stderr.write("\033[31m%s\033[0m\n" % e)
+        sys.stderr.write(term.paint(e, "31", sys.stderr) + "\n")
         return 1
     if a.json:
         print(json.dumps(s))

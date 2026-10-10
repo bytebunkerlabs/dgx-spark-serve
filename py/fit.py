@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fetch  # noqa: E402
 import hfget  # noqa: E402
 import rackfit  # noqa: E402
+import term  # noqa: E402
 
 DEFAULT_CONTEXT = 32768
 PLATFORM_BUDGET = {"dgx": "unified memory", "mac": "the Metal working-set limit", "linux": "GPU memory",
@@ -165,7 +166,7 @@ def fit(platform, budget_mb, nodes, repo=None, spec=None):
 def show(r):
     w = sys.stdout.write
     title = r["repo"] + ("  (recipe %s)" % r["recipe"] if r.get("recipe") else "")
-    w("\033[1m%s\033[0m\n" % title)
+    w(term.paint(title, "1") + "\n")
     if r.get("download_bytes") is not None:
         n = len(r["files"])
         w("  download    %s in %d file%s\n" % (fetch.human(r["download_bytes"]), n, "" if n == 1 else "s"))
@@ -216,7 +217,7 @@ def main(argv):
     try:
         r = fit(a.platform, a.budget_mb, a.nodes, a.repo, json.loads(a.spec) if a.spec else None)
     except (hfget.HubError, fetch.FetchError) as e:
-        sys.stderr.write("\033[31m%s\033[0m\n" % e)
+        sys.stderr.write(term.paint(e, "31", sys.stderr) + "\n")
         return 1
     if a.json:
         print(json.dumps(r))

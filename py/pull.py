@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fetch  # noqa: E402
 import hfget  # noqa: E402
+import term  # noqa: E402
 
 
 def main(argv):
@@ -25,12 +26,12 @@ def main(argv):
             if not plan:
                 print("  %s: %s" % (p["repo"], s["snapshot"]))
     except (hfget.HubError, fetch.FetchError) as e:
-        sys.stderr.write("\033[31m%s\033[0m\n" % e)
+        sys.stderr.write(term.paint(e, "31", sys.stderr) + "\n")
         return 1
     if plan and as_json:
         print(json.dumps({"schema": 1, "command": "pull", "platform": platform, "engine": spec["engine"], "pulls": out}))
     elif plan:
-        print("\033[1mplan: rack pull for %s (nothing was run)\033[0m" % platform)
+        print(term.paint("plan: rack pull for %s (nothing was run)" % platform, "1"))
         for s in out:
             print("  %s@%s  %d files, %s; %s to download, %s free at %s" % (
                 s["repo"], s["commit"][:7], len(s["files"]), fetch.human(s["bytes"]), fetch.human(s["to_download"]),

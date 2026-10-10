@@ -8,10 +8,23 @@ RACK_VERSION=1.0.0-dev
 RACK_RECIPE_SCHEMA=2
 RACK_JSON_SCHEMA=1
 
-bold() { printf '\033[1m%s\033[0m\n' "$*"; }
-dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
-warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
-die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+# Colour for a person at a terminal; plain text for a pipe, a log or an app
+# reading the output, and for anyone who sets NO_COLOR.
+_COLOR_OUT=0 _COLOR_ERR=0
+if [ -z "${NO_COLOR:-}" ]; then
+  if [ -t 1 ]; then _COLOR_OUT=1; fi
+  if [ -t 2 ]; then _COLOR_ERR=1; fi
+fi
+paint() {     # paint <SGR code> <text>: one line on stdout
+  if [ "$_COLOR_OUT" = 1 ]; then printf '\033[%sm%s\033[0m\n' "$1" "$2"; else printf '%s\n' "$2"; fi
+}
+paint_err() { # the same on stderr
+  if [ "$_COLOR_ERR" = 1 ]; then printf '\033[%sm%s\033[0m\n' "$1" "$2" >&2; else printf '%s\n' "$2" >&2; fi
+}
+bold() { paint 1 "$*"; }
+dim()  { paint 2 "$*"; }
+warn() { paint_err 33 "$*"; }
+die()  { paint_err 31 "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # Where dgx-serve keeps its own config and state: outside the checkout, so an

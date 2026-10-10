@@ -36,6 +36,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import engines  # noqa: E402
 import recipes  # noqa: E402
+import term  # noqa: E402
 
 LABEL = "ai.bytebunker.dgx-serve.engine"          # launchd job
 UNIT = "dgx-serve-engine.service"                 # systemd user unit
@@ -709,7 +710,7 @@ def render(p, out=sys.stdout):
     title = "plan: rack %s" % p["command"]
     if p["command"] == "up":
         title += " %s --%s" % (p["recipe"], p["platform"])
-    out.write("\033[1m%s (nothing was run)\033[0m\n" % title)
+    out.write(term.paint("%s (nothing was run)" % title, "1", out) + "\n")
     if p["command"] == "up":
         out.write("  %s with %s, %s; on %s\n" % (p["model"], p["engine"], p["runtime"],
                                                  ", ".join(n["name"] for n in p["nodes"])))
@@ -1109,7 +1110,7 @@ def main(argv):
         Executor(site, p).execute()
         return 0
     except (PlanError, engines.EngineError, RuntimeError) as e:   # RuntimeError: a recipe that failed to source
-        sys.stderr.write("\033[31m%s\033[0m\n" % e)
+        sys.stderr.write(term.paint(e, "31", sys.stderr) + "\n")
         return 1
 
 
