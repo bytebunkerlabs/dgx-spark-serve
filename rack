@@ -367,7 +367,13 @@ check_resolved() {
 recipes_show() {
   flags_parse "$@"
   [ ${#REST[@]} -eq 1 ] || die "usage: rack recipes show <name> [--dgx|--linux|--windows|--mac]"
-  recipe_resolve "${REST[0]}" "${WANT_PLATFORM:-$(this_platform)}"
+  local plat=${WANT_PLATFORM:-$(this_platform)} have
+  if [ -z "$WANT_PLATFORM" ]; then
+    # reading is not serving: a recipe with no variant for this machine shows the first one it has
+    have=$(recipe_platforms "$(recipe_name_of "${REST[0]}")")
+    case " $have " in *" $plat "*) ;; *) [ -n "$have" ] && plat=${have%% *} ;; esac
+  fi
+  recipe_resolve "${REST[0]}" "$plat"
   if [ -f "$RECIPE_DIR/model.env" ]; then
     printf '# %s\n' "$RECIPE_DIR/model.env"; cat "$RECIPE_DIR/model.env"; echo
   fi

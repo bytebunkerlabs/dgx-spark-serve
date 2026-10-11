@@ -141,6 +141,10 @@ class Pair(unittest.TestCase):
         out = self.ok(self.remote("recipes show tiny")).stdout
         self.assertEqual(out, "# %s/model.env\nMODEL=Qwen/Qwen3-0.6B\n\n# %s/dgx.env\n"
                               '. "$RECIPE_DIR/model.env"\nSERVE_ARGS=(--max-model-len 8192)\n' % (d, d))
+        # a recipe with no variant for this machine still reads: the first one it has
+        os.rename(os.path.join(d, "dgx.env"), os.path.join(d, "mac.env"))
+        self.assertIn("# %s/mac.env" % d, self.ok(self.remote("recipes show tiny")).stdout)
+        self.assertIn("no such recipe: nope", self.remote("recipes show nope").stderr)
 
 
 if __name__ == "__main__":
