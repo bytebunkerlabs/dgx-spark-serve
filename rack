@@ -33,6 +33,7 @@ cd "$ROOT"
 . "$ROOT/lib/flags.sh"
 . "$ROOT/lib/recipe.sh"
 . "$ROOT/lib/gateway.sh"
+. "$ROOT/lib/pair.sh"
 RACK_ROOT=$ROOT
 load_site_env
 SITE_IMAGE=${IMAGE:-}                        # the site's image, if it named one (else per platform)
@@ -99,6 +100,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack models                 what's on disk, and where
   rack new <name> <hf-id>     scaffold recipes/<name>.env
   rack recipes                list recipes, and the platforms each serves on
+  rack recipes show <name>    the files a recipe runs on this platform
 
   rack build [community|ngc|upstream]   build the image and ship it to the workers
   rack preflight              read-only health check, every node
@@ -114,6 +116,10 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack monitor up [--bare]|down|status|token|logs
                               telemetry for every node behind one endpoint; bare (no Docker)
                               on a Mac or WSL2 (docs/11-monitor.md)
+  rack pair [--key '<public key>' --name <app>]
+                              what ByteBunker needs to reach this rack; with --key, the app's
+                              own ssh key, allowed to run rack commands here and nothing else
+  rack unpair [--name <app>]  remove an app's key
 
   --dgx --linux --windows --mac   pull, up, fit, recipes, new: that platform's variant
                               (default: this machine's; another is refused with the fix)
@@ -324,6 +330,7 @@ recipe_model() {
 
 cmd_recipes() {
   [ "${1:-}" = check ] && { shift; recipes_check "$@"; return; }
+  [ "${1:-}" = show ] && { shift; recipes_show "$@"; return; }
   flags_parse "$@"
   [ ${#REST[@]} -eq 0 ] || die "usage: rack recipes [--dgx|--linux|--windows|--mac] [--json] | rack recipes check [<name>...]"
   local here budget names json=""
@@ -353,6 +360,18 @@ check_resolved() {
   esac
   printf '%s\t%s\trepo\n' "$RECIPE_NAME" "$loc" \
     | python3 "$ROOT/py/recipes.py" check --root "$ROOT" --config "$DGX_SERVE_CONFIG" --platform "$TARGET_PLATFORM"
+}
+
+# rack recipes show <name> [--<platform>]: what serving it would source, the
+# shared model.env first, each file under a "# <path>" line.
+recipes_show() {
+  flags_parse "$@"
+  [ ${#REST[@]} -eq 1 ] || die "usage: rack recipes show <name> [--dgx|--linux|--windows|--mac]"
+  recipe_resolve "${REST[0]}" "${WANT_PLATFORM:-$(this_platform)}"
+  if [ -f "$RECIPE_DIR/model.env" ]; then
+    printf '# %s\n' "$RECIPE_DIR/model.env"; cat "$RECIPE_DIR/model.env"; echo
+  fi
+  printf '# %s\n' "$RECIPE_FILE"; cat "$RECIPE_FILE"
 }
 
 # rack recipes check [<name>...]: what may be in a recipe, and whether each
@@ -788,7 +807,7 @@ done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 if [ -n "$ON_NODE" ]; then
   case "${1:-}" in
-    init|nodes|install|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
+    init|nodes|install|pair|unpair|remote|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
   esac
   inv_has "$ON_NODE" || die "no such node: $ON_NODE  (rack nodes)"
   on_plat=$(inv_get "$ON_NODE" NODE_PLATFORM) on_plan=0
@@ -826,6 +845,9 @@ case "${1:-}" in
   monitor)   shift; monitor_env exec "$ROOT/monitor/rack-monitor.sh" "$@" ;;
   gateway)   shift; cmd_gateway "$@" ;;
   install)   shift; cmd_install "$@" ;;
+  pair)      shift; cmd_pair "$@" ;;
+  unpair)    shift; cmd_unpair "$@" ;;
+  remote)    shift; cmd_remote "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (rack --help)" ;;
 esac

@@ -24,6 +24,7 @@ rack platform [--json]        dgx, linux, windows (WSL2) or mac; GPUs; memory fo
 rack nodes [add|rm|test]      the machines of this rack: workers on the fabric, other servers
 rack recipes [--<platform>]   recipes and the platforms they serve on (on a platform: what fits)
 rack recipes check            what a recipe may contain, checked before anything sources it
+rack recipes show <name>      the files a recipe runs on this platform
 rack new <name> <hf-id>       scaffold a recipe for this platform (--mac, --windows, ...)
 rack fit <recipe|hf-id>       will it fit this machine? the hub's numbers, this platform's budget
 rack pull <recipe|hf-id>      download exactly what the variant serves, verified; replicate to workers
@@ -36,6 +37,9 @@ rack down                     stop it, everywhere it runs
 rack monitor up [--bare]      telemetry for every node behind one endpoint, for the app
 rack gateway [sync|...]       a LiteLLM route per serving recipe, when the site has a gateway
 rack version [--json]         versions and schemas, for the app
+rack pair [--key K --name N]  what the ByteBunker app needs to reach this rack, and its own
+                              ssh key, allowed to run rack here and nothing else
+rack unpair [--name N]        take an app's key back
 ```
 
 `pull`, `up`, `fit`, `recipes` and `new` take a platform flag (`--dgx`,
@@ -183,6 +187,7 @@ lib/
   flags.sh              --dgx/--linux/--windows/--mac, --plan, --on
   recipe.sh             finding a recipe and its variant
   gateway.sh            rack gateway
+  pair.sh               rack pair, rack unpair, rack remote (the app key's only command)
 py/
   serve.py              rack up / rack down: the plan, then running it
   engines.py            the pinned engines (llama.cpp b11430, vLLM)
@@ -216,6 +221,7 @@ docs/
   04-tuning.md          phase 4 — the performance program
   11-monitor.md         rack monitor: what it measures, the API, reaching it
   12-platforms.md       dgx-serve 1.0: platforms, inventory, recipes, serving, settings
+  13-pairing.md         the ByteBunker app and this rack: what pairing reads, what its key may run
 recipes/                a folder per model, a file per platform (TEMPLATE*.env scaffold them)
 bench/results.jsonl     the lab notebook — committed, append-only
 ```
