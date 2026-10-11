@@ -16,7 +16,7 @@ In the app: **Add a rack**, then `user@host` (the head, for a cluster).
 3. `rack pair` puts that key in `~/.ssh/authorized_keys` as
 
    ```
-   command="/home/you/.local/bin/rack remote",restrict ssh-ed25519 AAAA... bytebunker:<app>
+   command="/home/you/.local/bin/rack remote --app <app>",restrict ssh-ed25519 AAAA... bytebunker:<app>
    ```
 
    and prints what the app needs: this node's name and platform, its addresses
@@ -41,10 +41,11 @@ the app connects with its own key.
 | `fit`, `pull`, `up`, `down`, `logs`, `bench` | serve, stop, watch |
 | `nodes [ls\|test]`, `gateway [status\|sync]`, `monitor status\|up` | the rest of the picture |
 | `pair --json` | read the pairing again (a new engine key, a monitor that came up) |
+| `unpair` | take back this app's own key (only its own: the forced command names the app) |
 
 Never: a shell, `--on` (another machine), `init`, `nodes add\|rm`, `new`,
 `build`, `install`, `monitor token`, `gateway remove\|adopt`, `pair --key`
-(another key), `unpair`. Words are letters, digits and `. _ : / = @ + , -`
+(another key), `unpair --name` (another app's key). Words are letters, digits and `. _ : / = @ + , -`
 only, so nothing reaches a shell. `restrict` also turns off port, agent and X11
 forwarding and the terminal.
 
@@ -54,5 +55,7 @@ forwarding and the terminal.
 rack unpair --name <app>      that app's key
 rack unpair                   every app's key
 ```
+
+Removing a rack in the app takes back its key the same way, from the app.
 
 Your own lines in `authorized_keys` are never touched.

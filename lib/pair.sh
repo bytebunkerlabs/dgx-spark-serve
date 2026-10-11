@@ -9,8 +9,9 @@
 #       shell, no forwarding, no terminal). --json is for the app reading it
 #       over ssh and carries the keys; a person gets a summary without them.
 #   rack unpair [--name <app>]  remove that app's key (every app's without --name)
-#   rack remote                 the forced command of an app's key: runs
-#       SSH_ORIGINAL_COMMAND only when it is one of the commands below
+#   rack remote --app <name>    the forced command of an app's key: runs
+#       SSH_ORIGINAL_COMMAND only when it is one of the commands below, and
+#       `unpair`, which takes back that app's own key and no other
 # Bash 3.2.
 
 PAIR_TAG=bytebunker            # an app's key line ends with bytebunker:<name>
@@ -51,7 +52,7 @@ pair_install_key() {
   esac
   typ=${key%% *} rest=${key#* }
   body=${rest%% *}
-  python3 - "$AUTH_KEYS" "$body" "command=\"$rp remote\",restrict $typ $body $PAIR_TAG:$name" <<'PY'
+  python3 - "$AUTH_KEYS" "$body" "command=\"$rp remote --app $name\",restrict $typ $body $PAIR_TAG:$name" <<'PY'
 import os, sys, tempfile
 path, body, line = sys.argv[1:4]
 d = os.path.dirname(path)
@@ -85,7 +86,8 @@ except FileNotFoundError:
     print(0); sys.exit()
 def ours(l):
     w = l.split()
-    return ' remote",restrict ' in l and bool(w) and (w[-1] == "%s:%s" % (tag, name) if name else w[-1].startswith(tag + ":"))
+    return l.startswith('command="') and ' remote' in l and '",restrict ' in l and bool(w) \
+        and (w[-1] == "%s:%s" % (tag, name) if name else w[-1].startswith(tag + ":"))
 keep = [l for l in old if not ours(l)]
 if len(keep) != len(old):
     d = os.path.dirname(path)
@@ -101,7 +103,7 @@ PY
 # The apps paired here, one name per line.
 pair_apps() {
   [ -f "$AUTH_KEYS" ] || return 0
-  awk -v t="$PAIR_TAG:" 'index($0, " remote\",restrict ") && index($NF, t) == 1 { print substr($NF, length(t) + 1) }' "$AUTH_KEYS"
+  awk -v t="$PAIR_TAG:" 'index($0, "command=\"") == 1 && index($0, " remote") && index($0, "\",restrict ") && index($NF, t) == 1 { print substr($NF, length(t) + 1) }' "$AUTH_KEYS"
 }
 
 # Everything the app needs, as one JSON document (secrets included: it goes
@@ -231,14 +233,21 @@ remote_allowed() {
   return 1
 }
 
+REMOTE_APP=""
 remote_log() {
   mkdir -p "$(dirname "$REMOTE_LOG")" 2>/dev/null || return 0
   if [ -f "$REMOTE_LOG" ] && [ "$(wc -c < "$REMOTE_LOG")" -gt 1048576 ]; then mv -f "$REMOTE_LOG" "$REMOTE_LOG.1"; fi
-  printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SSH_CLIENT%% *}" "$1" "$2" >> "$REMOTE_LOG" 2>/dev/null || true
+  printf '%s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SSH_CLIENT%% *}" "${REMOTE_APP:-?}" "$1" "$2" \
+    >> "$REMOTE_LOG" 2>/dev/null || true
 }
 
 cmd_remote() {
   local line=${SSH_ORIGINAL_COMMAND-} words
+  case "${1:-}" in
+    --app) pair_name_ok "${2:-}" || die "rack remote: --app needs the app's name"; REMOTE_APP=$2 ;;
+    "") ;;
+    *) die "usage: rack remote [--app <name>] (the forced command of an app's key)" ;;
+  esac
   if [ -z "$line" ]; then
     die "rack remote: this key runs rack's commands only (ssh <this machine> rack status)"
   fi
@@ -247,6 +256,10 @@ cmd_remote() {
   esac
   read -r -a words <<< "$line"
   [ "${words[0]:-}" = rack ] && words=(${words[@]+"${words[@]:1}"})
+  if [ -n "$REMOTE_APP" ] && [ "${words[*]:-}" = unpair ]; then     # an app takes back its own key
+    remote_log ran "$line"
+    exec "$ROOT/rack" unpair --name "$REMOTE_APP"
+  fi
   if [ ${#words[@]} -eq 0 ] || ! remote_allowed "${words[@]}"; then
     remote_log refused "$line"
     die "rack remote: not one of the commands an app may run here: $line"

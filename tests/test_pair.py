@@ -41,7 +41,10 @@ class Pair(unittest.TestCase):
         self.m.cleanup()
 
     def lines(self):
-        return open(self.auth).read().splitlines() if os.path.exists(self.auth) else []
+        if not os.path.exists(self.auth):
+            return []
+        with open(self.auth) as f:
+            return f.read().splitlines()
 
     def ok(self, r):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -66,7 +69,8 @@ class Pair(unittest.TestCase):
             f.write(MINE + "\n")
         self.ok(self.m.rack("pair", "--key", KEY, "--name", "hermes"))
         body = KEY.split()[1]
-        self.assertEqual(self.lines(), [MINE, 'command="%s remote",restrict ssh-ed25519 %s bytebunker:hermes' % (self.rack_path, body)])
+        self.assertEqual(self.lines(), [MINE, 'command="%s remote --app hermes",restrict ssh-ed25519 %s bytebunker:hermes'
+                                        % (self.rack_path, body)])
         self.assertEqual(os.stat(self.auth).st_mode & 0o777, 0o600)
         # the same key again replaces its line; another key is a second app
         self.ok(self.m.rack("pair", "--key", KEY, "--name", "hermes-app"))
@@ -96,8 +100,9 @@ class Pair(unittest.TestCase):
         self.ok(self.m.rack("unpair"))
         self.assertEqual(self.lines(), [MINE])
 
-    def remote(self, line):
-        return self.m.rack("remote", extra_env={"SSH_ORIGINAL_COMMAND": line, "SSH_CLIENT": "100.64.0.9 50000 22"})
+    def remote(self, line, app="hermes"):
+        return self.m.rack("remote", *(["--app", app] if app else []),
+                           extra_env={"SSH_ORIGINAL_COMMAND": line, "SSH_CLIENT": "100.64.0.9 50000 22"})
 
     def test_remote_runs_rack_commands_only(self):
         self.m.logging_cmd("touch")
@@ -106,15 +111,25 @@ class Pair(unittest.TestCase):
         self.assertEqual(rack_json(self.remote("pair --json"))["engine"]["port"], 8888)
         for bad in ("status; touch /tmp/owned", "$(touch x)", "`touch x`", "status && touch x", "status | touch x",
                     "init", "nodes add evil --ssh x", "nodes rm box", "pair --json --key x", "pair",
-                    "up qwen3-8b --on spark-2", "monitor token", "gateway remove qwen", "unpair", "remote",
+                    "up qwen3-8b --on spark-2", "monitor token", "gateway remove qwen", "unpair --name laptop", "remote",
                     "install", "new x y", "rack", "", "status\ntouch x", "logs\t-f"):
             r = self.remote(bad)
             self.assertNotEqual(r.returncode, 0, bad)
             self.assertIn("rack remote:", r.stderr, bad)
         self.assertEqual(self.m.log("touch"), [])
-        log = open(os.path.join(self.m.home, ".local", "state", "dgx-serve", "remote.log")).read().splitlines()
-        self.assertTrue(log[0].endswith("100.64.0.9 ran rack version --json"), log[0])
-        self.assertIn("100.64.0.9 refused status; touch /tmp/owned", log[2])
+        with open(os.path.join(self.m.home, ".local", "state", "dgx-serve", "remote.log")) as f:
+            log = f.read().splitlines()
+        self.assertTrue(log[0].endswith("100.64.0.9 hermes ran rack version --json"), log[0])
+        self.assertIn("100.64.0.9 hermes refused status; touch /tmp/owned", log[2])
+
+    def test_an_app_takes_back_its_own_key_and_no_other(self):
+        self.ok(self.m.rack("pair", "--key", KEY, "--name", "hermes"))
+        self.ok(self.m.rack("pair", "--key", KEY2, "--name", "laptop"))
+        self.assertNotEqual(self.remote("unpair --name laptop").returncode, 0)
+        self.assertNotEqual(self.remote("unpair", app=None).returncode, 0)     # which app? refused
+        self.assertEqual(len(self.lines()), 2)
+        self.ok(self.remote("rack unpair"))
+        self.assertEqual([l.split()[-1] for l in self.lines()], ["bytebunker:laptop"])
 
     def test_recipes_show_prints_the_files_a_recipe_runs(self):
         d = self.m.config_path("recipes", "tiny")
