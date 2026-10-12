@@ -101,12 +101,14 @@ class Read(Base):
         out = big.rack("recipes", "--mac").stdout
         self.assertRegex(out, r"qwen3-8b\s+solo\s+5.0 GB\s+fits\s+Qwen3-8B-Q4_K_M.gguf \(llamacpp\)")
         d = rack_json(big.rack("recipes", "--mac", "--json"))
-        v = d["recipes"][0]["variants"]["mac"]
+        v = {r["name"]: r for r in d["recipes"]}["qwen3-8b"]["variants"]["mac"]
         self.assertEqual((v["fits"], v["needs_gb"]), (True, 6.0))
+        self.assertTrue(all(r["variants"]["mac"]["fits"] for r in d["recipes"]))
         # on another platform the listing filters by variant only
         d = rack_json(big.rack("recipes", "--windows", "--json"))
-        self.assertEqual([r["name"] for r in d["recipes"]], ["qwen3-8b"])
-        self.assertIsNone(d["recipes"][0]["variants"]["windows"]["fits"])
+        self.assertIn("qwen3-8b", [r["name"] for r in d["recipes"]])
+        self.assertTrue(all("windows" in r["platforms"] for r in d["recipes"]))
+        self.assertIsNone({r["name"]: r for r in d["recipes"]}["qwen3-8b"]["variants"]["windows"]["fits"])
 
 
 EVIL = {

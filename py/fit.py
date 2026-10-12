@@ -54,22 +54,40 @@ def config_of(repo, revision, tok):
         return None
 
 
-def kv_bytes_per_token(cfg, dtype_bytes=2):
-    """KV cache bytes per token, from config.json (MLA models store a latent)."""
+def kv_cache(cfg, dtype_bytes=2):
+    """(bytes per token, fixed bytes) of the KV cache, from config.json.
+
+    Only layers that attend to the whole context grow with it: a sliding layer
+    keeps at most its window, a linear-attention layer a small fixed state (not
+    counted). MLA models store a latent per layer. (None, 0) when unknown."""
     if not cfg:
-        return None
+        return None, 0
     t = cfg.get("text_config") or cfg
     layers = t.get("num_hidden_layers")
     if not layers:
-        return None
+        return None, 0
     if t.get("kv_lora_rank"):
-        return int(layers * (t["kv_lora_rank"] + (t.get("qk_rope_head_dim") or 0)) * dtype_bytes)
+        return int(layers * (t["kv_lora_rank"] + (t.get("qk_rope_head_dim") or 0)) * dtype_bytes), 0
     heads = t.get("num_attention_heads")
     kv = t.get("num_key_value_heads") or heads
     head_dim = t.get("head_dim") or (t.get("hidden_size") // heads if heads and t.get("hidden_size") else None)
     if not (kv and head_dim):
-        return None
-    return int(2 * layers * kv * head_dim * dtype_bytes)
+        return None, 0
+    per_layer = 2 * kv * head_dim * dtype_bytes
+    types = t.get("layer_types")
+    if isinstance(types, list) and len(types) == layers:
+        full = sum(1 for x in types if x == "full_attention")
+        sliding = sum(1 for x in types if x == "sliding_attention")
+        return int(full * per_layer), int(sliding * (t.get("sliding_window") or 0) * per_layer)
+    every = t.get("full_attention_interval")
+    if every:
+        return int(layers // every * per_layer), 0
+    return int(layers * per_layer), 0
+
+
+def kv_bytes_per_token(cfg, dtype_bytes=2):
+    """KV cache bytes per token of context (see kv_cache)."""
+    return kv_cache(cfg, dtype_bytes)[0]
 
 
 def active_params(cfg):
@@ -88,16 +106,16 @@ def active_params(cfg):
     return {"active": (top + shared) * 3 * hidden * inter * moe_layers, "routed": routed, "top": top, "shared": shared}
 
 
-def assess(weights_bytes, kv_per_token, context, native, platform, budget_mb, nodes, engine):
+def assess(weights_bytes, kv_per_token, context, native, platform, budget_mb, nodes, engine, kv_fixed=0):
     """Per node count: what serving needs at `context` (a recipe's window; for
     a bare repo, the smallest useful one), and the longest window that fits."""
     gb = weights_bytes / 1e9
     ctx = context or rackfit.MIN_CONTEXT
-    kv_gb = (kv_per_token * ctx / 1e9) if kv_per_token else None
+    kv_gb = ((kv_per_token * ctx + kv_fixed) / 1e9) if kv_per_token else None
     out = []
     for n in sorted({1, nodes}):
         fits, need, usable = rackfit.verdict(gb, platform, budget_mb, n, engine, kv_gb)
-        mc = rackfit.max_context(gb, kv_per_token, platform, budget_mb, engine, n)
+        mc = rackfit.max_context(gb + kv_fixed / 1e9, kv_per_token, platform, budget_mb, engine, n)
         if mc is not None and native:
             mc = min(mc, native)
         out.append({"nodes": n, "needs_gb": round(need, 1), "usable_gb": round(usable, 1), "fits": fits,
@@ -136,8 +154,9 @@ def fit(platform, budget_mb, nodes, repo=None, spec=None):
         or (info.get("gguf") or {}).get("context_length")
     res["native_context"] = native
     res["context"] = context                 # None for a bare repo: the verdict says how long a window fits
-    kvt = kv_bytes_per_token(cfg, kv_dtype)
+    kvt, kvf = kv_cache(cfg, kv_dtype)
     res["kv_bytes_per_token"] = kvt
+    res["kv_fixed_bytes"] = kvf
     engine = (spec or {}).get("engine") or ("llamacpp" if ggufs and platform in ("mac", "windows") else "vllm")
     res["engine"] = engine
 
@@ -151,11 +170,11 @@ def fit(platform, budget_mb, nodes, repo=None, spec=None):
         res["download_bytes"] = size
         if engine == "llamacpp" and spec is None:
             engine = res["engine"] = "vllm"   # a repo of safetensors serves with vLLM
-        res["kv_gb"], res["verdicts"] = assess(size, kvt, context, native, platform, budget_mb, nodes, engine)
+        res["kv_gb"], res["verdicts"] = assess(size, kvt, context, native, platform, budget_mb, nodes, engine, kvf)
     else:                                       # a GGUF repo: every quant, smallest first
         res["quants"] = []
         for f in sorted(ggufs, key=lambda x: x["size"] or 0):
-            kv_gb, v = assess(f["size"] or 0, kvt, context, native, platform, budget_mb, 1, "llamacpp")
+            kv_gb, v = assess(f["size"] or 0, kvt, context, native, platform, budget_mb, 1, "llamacpp", kvf)
             res["quants"].append({"file": f["path"], "bytes": f["size"], "needs_gb": v[0]["needs_gb"],
                                   "fits": v[0]["fits"], "max_context": v[0]["max_context"]})
             res["kv_gb"] = kv_gb
@@ -177,7 +196,8 @@ def show(r):
     if r.get("kv_bytes_per_token"):
         if r.get("context"):
             w("  KV cache    %s for the recipe's %s tokens (%d KiB per token)\n" % (
-                fetch.human(r["kv_bytes_per_token"] * r["context"]), "{:,}".format(r["context"]),
+                fetch.human(r["kv_bytes_per_token"] * r["context"] + (r.get("kv_fixed_bytes") or 0)),
+                "{:,}".format(r["context"]),
                 r["kv_bytes_per_token"] // 1024))
         else:
             w("  KV cache    %d KiB per token%s\n" % (r["kv_bytes_per_token"] // 1024,
