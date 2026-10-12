@@ -137,6 +137,11 @@ docker run -d --name rack-monitor-docker --restart unless-stopped \
 # a runtime named nvidia); without a GPU stack the monitor still runs, GPU-less.
 gpu=()
 command -v nvidia-smi >/dev/null 2>&1 && gpu=(--gpus all)
+# The device nodes as well: --gpus alone loses them when systemd reloads (a snap
+# update does), and nvidia-smi in the container then fails to initialize NVML.
+if [ ${#gpu[@]} -gt 0 ]; then
+  for d in /dev/nvidia*; do [ -c "$d" ] && gpu+=(--device "$d"); done
+fi
 extra=()
 [ -n "$engine_ports" ] && extra=(-e "MONITOR_ENGINE_PORTS=$engine_ports")
 run_monitor() {

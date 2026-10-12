@@ -250,6 +250,39 @@ utun2      1380  <Link#21>                           10     0       1000       1
 """
 
 
+class GpuLost(unittest.TestCase):
+    def node(self):
+        n = rackmon.Node.__new__(rackmon.Node)
+        n.gpu_error, n.gpu_lost = None, 0
+        return n
+
+    def test_exits_for_a_restart_only_after_a_minute_in_a_container(self):
+        n = self.node()
+        exits = []
+        real_exit, real_exists = os._exit, os.path.exists
+        os._exit = exits.append
+        try:
+            os.path.exists = lambda p: True if p == "/.dockerenv" else real_exists(p)
+            n.gpu_error = "Failed to initialize NVML: Unknown Error"
+            for _ in range(n.GPU_LOST_LIMIT - 1):
+                n.gpu_lost_check()
+            self.assertEqual(exits, [])
+            n.gpu_lost_check()
+            self.assertEqual(exits, [3])
+            os.path.exists = lambda p: False if p == "/.dockerenv" else real_exists(p)
+            n2 = self.node()
+            n2.gpu_error = "Failed to initialize NVML: Unknown Error"
+            for _ in range(n2.GPU_LOST_LIMIT * 2):
+                n2.gpu_lost_check()                           # not in a container: nothing restarts it
+            n3 = self.node()
+            n3.gpu_error = "nvidia-smi exit 9"
+            for _ in range(n3.GPU_LOST_LIMIT * 2):
+                n3.gpu_lost_check()                           # another error: no restart helps
+            self.assertEqual(exits, [3])
+        finally:
+            os._exit, os.path.exists = real_exit, real_exists
+
+
 class Mac(unittest.TestCase):
     """The macOS sampler's parsers, pinned against output captured on an M3 Max."""
 

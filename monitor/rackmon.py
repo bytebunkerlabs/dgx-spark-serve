@@ -618,6 +618,7 @@ class Node:
         self.engines_at = 0.0
         self.gpu_fields = None
         self.gpu_error = None
+        self.gpu_lost = 0                 # samples in a row that NVML refused after the GPU had answered
         self.static = self._static()
         self.history = collections.deque(maxlen=HISTORY_MAX)
         self.current = None
@@ -658,6 +659,22 @@ class Node:
                 pass
         return fields
 
+    GPU_LOST_LIMIT = 30               # about a minute at the default 2 s
+
+    def gpu_lost_check(self):
+        """A container loses the GPU when systemd reloads (snap updates do):
+        nvidia-smi then says "Failed to initialize NVML" until the container
+        restarts. Docker's restart policy brings it back with the GPU, so
+        after a minute of that, in a container, the monitor exits."""
+        if "Failed to initialize NVML" not in (self.gpu_error or ""):
+            return
+        self.gpu_lost += 1
+        if self.gpu_lost >= self.GPU_LOST_LIMIT and os.path.exists("/.dockerenv"):
+            sys.stderr.write("rack-monitor: lost the GPU (%s); exiting for Docker to restart it with the GPU\n"
+                             % self.gpu_error)
+            sys.stderr.flush()
+            os._exit(3)
+
     def sample_gpus(self, containers):
         if self.gpu_fields is None:
             try:
@@ -677,8 +694,10 @@ class Node:
                                         "--format=csv,noheader,nounits"]),
                              ["gpu_uuid", "pid", "process_name", "used_memory"])
             self.gpu_error = None
+            self.gpu_lost = 0
         except Exception as e:  # noqa: BLE001
             self.gpu_error = str(e)[:160]
+            self.gpu_lost_check()
             return []
         by_id = {c.get("_full"): c["name"] for c in containers if c.get("_full")}
         gpus = []
