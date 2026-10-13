@@ -15,9 +15,10 @@ Measures what a single user feels:
   prompt_tokens  the prompt's length as the server counted it
   total_tok_s    with --concurrency N: every stream's tokens over the wall
                  time from the first request to the last answer
-  peak_mem_gb    with --pid: the engine process's peak memory footprint while
-                 the run went (macOS footprint, which counts Metal buffers;
-                 resident memory elsewhere)
+  peak_mem_gb    with --pid: the engine process's peak memory while the run
+                 went: on macOS the larger of its footprint (Metal buffers an
+                 engine allocates) and resident memory (weights it maps from
+                 a file), both kept; resident memory elsewhere
 
 Usage:
   scripts/bench.py --url http://127.0.0.1:8000/v1 --model NAME --label phase1-baseline
@@ -80,16 +81,25 @@ class PeakMemory:
 
     def __init__(self, pid, every=1.0):
         self.pid, self.every, self.peak = int(pid), every, 0
+        self.peak_footprint = self.peak_rss = 0
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._loop, daemon=True)
 
     def sample(self):
+        """The larger of two counts: macOS footprint counts Metal buffers an engine
+        allocates (MLX) but not weights it maps from a file (llama.cpp's mmap);
+        resident memory counts mapped weights once they are paged in."""
         try:
             if sys.platform == "darwin":
                 out = subprocess.run(["footprint", "-f", "bytes", "-p", str(self.pid)],
                                      capture_output=True, text=True, timeout=30).stdout
                 m = re.search(r"Footprint:\s*(\d+)\s*B", out)
-                return int(m.group(1)) if m else 0
+                fp = int(m.group(1)) if m else 0
+                rss = subprocess.run(["ps", "-o", "rss=", "-p", str(self.pid)], capture_output=True, text=True,
+                                     timeout=10).stdout.strip()
+                rss = int(rss) * 1024 if rss.isdigit() else 0
+                self.peak_footprint, self.peak_rss = max(self.peak_footprint, fp), max(self.peak_rss, rss)
+                return max(fp, rss)
             with open("/proc/%d/status" % self.pid) as f:
                 for line in f:
                     if line.startswith("VmRSS:"):
@@ -280,7 +290,9 @@ def main():
         r = dict(sorted(ok, key=lambda x: x["decode_tok_s"] or 0)[len(ok) // 2])
         r.pop("t0"), r.pop("t1")
         r.update(concurrency=args.concurrency, total_tok_s=total if args.concurrency > 1 else r["decode_tok_s"],
-                 wall_s=wall, peak_mem_gb=mem.peak_gb if mem else None)
+                 wall_s=wall, peak_mem_gb=mem.peak_gb if mem else None,
+                 peak_footprint_gb=round(mem.peak_footprint / 1e9, 2) if mem and mem.peak_footprint else None,
+                 peak_rss_gb=round(mem.peak_rss / 1e9, 2) if mem and mem.peak_rss else None)
         rows.append(r)
         print(f"run {i + 1}: ttft {r['ttft_s']}s  decode {r['decode_tok_s']} tok/s  "
               f"total {r['total_s']}s  ({r['completion_tokens']} tok, by {r['counted_by']})"
