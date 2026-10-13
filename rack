@@ -104,7 +104,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
 
   rack build [community|ngc|upstream]   build the image and ship it to the workers
   rack preflight              read-only health check, every node
-  rack up <recipe>            launch — solo or TP=2, whichever the recipe says
+  rack up <recipe>            launch — solo or TP=2, whichever the recipe says; starts the monitor too (--no-monitor: not)
   rack down                   stop serving on every node
   rack status                 containers, memory, API health
   rack logs [-f] [<node>|worker]   engine logs
@@ -515,18 +515,19 @@ cmd_preflight() {
 
 cmd_up() {
   flags_parse "$@"
-  local replace="" boot="" debug="" a r
+  local replace="" boot="" debug="" monitor=1 a r
   set --
   for a in ${REST[@]+"${REST[@]}"}; do
     case "$a" in
       --replace) replace=--replace ;;
       --boot) boot=--boot replace=--replace ;;
       --debug) debug=1 ;;
+      --no-monitor) monitor="" ;;
       -*) die "rack up: unknown option $a  (rack --help)" ;;
       *) set -- "$@" "$a" ;;
     esac
   done
-  [ $# -eq 1 ] || die "usage: rack up <recipe> [--dgx|--linux|--windows|--mac] [--plan [--json]] [--replace] [--on <node>]"
+  [ $# -eq 1 ] || die "usage: rack up <recipe> [--dgx|--linux|--windows|--mac] [--plan [--json]] [--replace] [--no-monitor] [--on <node>]"
   r=$1
   flags_target up
   recipe_resolve "$r" "$TARGET_PLATFORM"
@@ -549,6 +550,15 @@ cmd_up() {
   # A route on the site's gateway, when it has one; serving goes on without it.
   if [ "$PLAN" != 1 ] && gateway_on; then
     gateway_sync || warn "gateway: the model serves, but LiteLLM has no route to it (rack gateway sync)"
+  fi
+  # The machine's monitor (what an app's Cluster reads): started when it is not running; serving goes on
+  # without it. With --json the monitor's lines go to stderr, so stdout stays one JSON document.
+  if [ "$PLAN" != 1 ] && [ -n "$monitor" ]; then
+    if [ "$JSON" = 1 ]; then
+      monitor_env "$ROOT/monitor/rack-monitor.sh" ensure >&2 || warn "monitor: did not start (rack monitor up)"
+    else
+      monitor_env "$ROOT/monitor/rack-monitor.sh" ensure || warn "monitor: did not start (rack monitor up)"
+    fi
   fi
 }
 

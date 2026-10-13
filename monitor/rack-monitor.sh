@@ -441,6 +441,13 @@ cmd_brief() {   # one line for `rack status`
   summary 2>/dev/null || dim "  running, not answering yet: rack monitor status"
 }
 
+cmd_ensure() {   # started when it is not running; quiet when it is (rack up calls this)
+  on_head || return 0
+  if bare; then bare_running && return 0
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx rack-monitor; then return 0; fi
+  cmd_up
+}
+
 cmd_token() {
   need_head token
   if [ "${1:-}" = --rotate ]; then
@@ -476,6 +483,7 @@ case "${1:-}" in
   down)   shift; cmd_down "$@" ;;
   status) shift; cmd_status "$@" ;;
   brief)  shift; cmd_brief "$@" ;;
+  ensure) shift; cmd_ensure "$@" ;;
   token)  shift; cmd_token "$@" ;;
   logs)   shift; cmd_logs "$@" ;;
   *) sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
