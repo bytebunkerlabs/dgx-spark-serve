@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class Fake(BaseHTTPRequestHandler):
     """Streams max_tokens tokens, 5 ms apart; counts a prompt's tokens as its words."""
     seen = []
+    drift = False
 
     def log_message(self, *a):
         pass
@@ -25,6 +26,16 @@ class Fake(BaseHTTPRequestHandler):
         prompt = body["messages"][0]["content"]
         Fake.seen.append(prompt)
         n = body["max_tokens"]
+        if not body.get("stream"):           # greedy.py: one answer, a word of it changed when asked
+            text = "answer to " + prompt + (" (drifted)" if Fake.drift and "Fibonacci" in prompt else "")
+            d = {"choices": [{"message": {"content": text}}], "usage": {"completion_tokens": 3}}
+            raw = json.dumps(d).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -77,6 +88,27 @@ class Bench(unittest.TestCase):
     def test_peak_memory_of_a_process(self):
         rows, _ = self.bench("--pid", str(os.getpid()))
         self.assertTrue(all(r["peak_mem_gb"] and r["peak_mem_gb"] > 0 for r in rows), rows)
+
+
+    def test_greedy_outputs_compare_byte_for_byte(self):
+        d = tempfile.mkdtemp()
+        run = lambda label: subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "greedy.py"), "--url", self.url,
+                                            "--model", "m", "--label", label, "--dir", d],
+                                           capture_output=True, text=True, timeout=120)
+        cmp = lambda a, b: subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "greedy.py"),
+                                           "--compare", a, b, "--dir", d], capture_output=True, text=True)
+        Fake.drift = False
+        run("off"), run("on")
+        Fake.drift = True
+        run("drifted")
+        Fake.drift = False
+        same = cmp("off", "on")
+        self.assertEqual(same.returncode, 0)
+        self.assertIn("20 of 20 identical", same.stdout)
+        diff = cmp("off", "drifted")
+        self.assertEqual(diff.returncode, 1)
+        self.assertIn("19 of 20 identical", diff.stdout)
+        self.assertIn("first difference: prompt 1", diff.stdout)
 
 
 if __name__ == "__main__":
