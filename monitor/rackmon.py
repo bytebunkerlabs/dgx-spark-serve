@@ -221,6 +221,19 @@ ENGINES = {
         "e2e": "sglang:e2e_request_latency_seconds",
         "itl": ("sglang:inter_token_latency_seconds", "sglang:time_per_output_token_seconds"),
     },
+    "tensorfold": {
+        # TensorFold 0.6.6 (a Mac, MLX): its MTP drafts count like vLLM's spec decode
+        "prefix": "tensorfold:",
+        "running": ("tensorfold:requests_running",),
+        "waiting": ("tensorfold:requests_waiting",),
+        "kv": ("tensorfold:kv_cache_usage_ratio",),
+        "gen": ("tensorfold:generation_tokens_total",),
+        "prompt": ("tensorfold:prompt_tokens_total",),
+        "ttft": "tensorfold:time_to_first_token_seconds",
+        "e2e": "tensorfold:request_latency_seconds",
+        "spec_draft_tokens": ("tensorfold:mtp_drafted_total",),
+        "spec_accepted": ("tensorfold:mtp_accepted_total",),
+    },
     "llama.cpp": {
         "prefix": "llamacpp:",
         "running": ("llamacpp:requests_processing",),
@@ -401,7 +414,7 @@ def proc_label(cmdline, fallback):
     """A short, secret-free label for a GPU process. Command lines can carry
     API keys, so only the engine family or the program name leaves the node."""
     low = cmdline.lower()
-    for key, label in (("vllm", "vllm"), ("sglang", "sglang"), ("llama-server", "llama.cpp"),
+    for key, label in (("vllm", "vllm"), ("sglang", "sglang"), ("llama-server", "llama.cpp"), ("tensorfold", "tensorfold"),
                        ("ollama", "ollama"), ("tritonserver", "triton"), ("comfyui", "comfyui")):
         if key in low:
             return label
@@ -812,7 +825,7 @@ class Node:
                 except Exception:  # noqa: BLE001
                     pass
             if not kind and declared.get("port") == port:
-                kind = {"llamacpp": "llama.cpp", "vllm": "vllm"}.get(declared.get("engine"), "openai")
+                kind = {"llamacpp": "llama.cpp", "vllm": "vllm", "tensorfold": "tensorfold"}.get(declared.get("engine"), "openai")
             if kind:
                 self.engines[port] = Engine(host, port, kind)
 

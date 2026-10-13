@@ -14,8 +14,8 @@ working memory (activations, CUDA graphs, compute buffers).
 RESERVE_GB = {"dgx": 9.0, "linux": 0.5, "windows": 0.8, "mac": 0.5}
 # The engine's own memory on top of weights and KV, and how much bigger the
 # weights get once loaded (vLLM pads and keeps a few buffers; a GGUF loads as is).
-OVERHEAD_GB = {"vllm": 1.5, "llamacpp": 0.5}
-WEIGHT_FACTOR = {"vllm": 1.03, "llamacpp": 1.0}
+OVERHEAD_GB = {"vllm": 1.5, "llamacpp": 0.5, "tensorfold": 1.0}   # tensorfold: MLX and Python, a guess until measured
+WEIGHT_FACTOR = {"vllm": 1.03, "llamacpp": 1.0, "tensorfold": 1.0}
 KV_GUESS = 0.10            # KV as a share of the weights, when the config is unknown
 MIN_CONTEXT = 4096         # a window too small to be useful does not count as fitting
 

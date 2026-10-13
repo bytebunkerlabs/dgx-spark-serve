@@ -4,9 +4,12 @@ vLLM runs as a container (DGX Spark, NVIDIA Linux) or, on Windows without
 Docker, from a venv. llama.cpp runs natively from one numbered release build
 of ggml-org/llama.cpp, verified by sha256 before it is unpacked: Metal on a
 Mac, CUDA on Linux and in WSL2 (with the matching cudart bundle, since WSL2
-has the driver but not the CUDA runtime libraries).
+has the driver but not the CUDA runtime libraries). TensorFold runs natively
+on a Mac from its own venv, its source pinned to one commit.
 """
 import os
+import shutil
+import subprocess
 import tarfile
 
 VLLM_IMAGE = {"dgx": "dgx-spark-serve:dev", "linux": "vllm/vllm-openai:v0.26.0"}
@@ -35,6 +38,19 @@ LLAMACPP_ASSETS = {
         ("cudart-llama-b11430-bin-ubuntu-cuda-13.4-arm64.tar.gz",
          "8a42053d0f764a2012953e5188e5035e4e7b724f48d3431de5d9396fccbbf217")],
 }
+
+
+# TensorFold (github.com/ashhart/TensorFold), Apache-2.0: MLX on a Mac, with
+# lossless speculative decoding from the checkpoint's MTP layer. 0.6.6 is its
+# last Python engine and the last that serves Qwen3.6 MoE (qwen3_5_moe); the
+# native 1.0 engine refuses that model type. Audited at this commit
+# (docs/12-platforms.md, "TensorFold"): no telemetry; the only outbound calls
+# are a release check (off: --no-update-check, TENSORFOLD_NO_UPDATE_CHECK=1)
+# and Hugging Face downloads for a repo not in the cache (off: HF_HUB_OFFLINE=1).
+TENSORFOLD_VERSION = "0.6.6"
+TENSORFOLD_COMMIT = "cb2ebf0540f42604e2759b2ddef497861e928248"      # tag v0.6.6, 2026-10-06
+TENSORFOLD_PACKAGE = "tensorfold @ git+https://github.com/ashhart/TensorFold.git@" + TENSORFOLD_COMMIT
+TENSORFOLD_PYTHON = (3, 11)       # its pyproject's requires-python
 
 
 class EngineError(Exception):
@@ -102,3 +118,41 @@ def safe_extract(tar_path, dest):
             if m.isdev():
                 raise EngineError("%s: device file %s" % (tar_path, m.name))
         t.extractall(dest)
+
+
+def tensorfold_dir(state):
+    return os.path.join(state, "engines", "tensorfold", TENSORFOLD_COMMIT)
+
+
+def tensorfold_bin(state):
+    return os.path.join(tensorfold_dir(state), "bin", "tensorfold")
+
+
+def python_at_least(minimum, which=shutil.which, run=subprocess.run):
+    """A Python this new for a venv: python3.13..python3.11 on PATH, else one uv
+    has (installing it with uv when uv is there). None when there is none."""
+    def ok(exe):
+        try:
+            r = run([exe, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                    capture_output=True, text=True, timeout=30)
+            return r.returncode == 0 and tuple(int(x) for x in r.stdout.strip().split(".")) >= minimum
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+    for minor in range(14, minimum[1] - 1, -1):
+        exe = which("python3.%d" % minor)
+        if exe and ok(exe):
+            return exe
+    uv = which("uv")
+    if uv:
+        want = ">=%d.%d" % minimum
+        for args in (["python", "find", want], ["python", "install", "%d.%d" % (minimum[0], max(minimum[1], 12))]):
+            try:
+                r = run([uv] + args, capture_output=True, text=True, timeout=900)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            if args[1] == "install" and r.returncode == 0:
+                r = run([uv, "python", "find", want], capture_output=True, text=True, timeout=60)
+            exe = (r.stdout or "").strip().splitlines()[-1:] if r.returncode == 0 else []
+            if exe and ok(exe[0]):
+                return exe[0]
+    return None

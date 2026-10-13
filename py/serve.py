@@ -15,9 +15,9 @@ fabric interface, IB HCAs, rack dir, HF cache, platform, GPUs).
 
 Serving is always detached. vLLM runs in a container with
 --restart unless-stopped (a cluster as one keep-alive container per node,
-the head's boot unit re-forming it after a reboot); llama.cpp, and vLLM on
-Windows without Docker, run natively under launchd (Mac) or a systemd user
-unit (Linux, WSL2). The launcher owns the host, the port, the served name
+the head's boot unit re-forming it after a reboot); llama.cpp, TensorFold (a
+Mac), and vLLM on Windows without Docker, run natively under launchd (Mac) or
+a systemd user unit (Linux, WSL2). The launcher owns the host, the port, the served name
 and the API key, and caps a container's memory from the machine's total.
 """
 import argparse
@@ -157,6 +157,9 @@ def host_port(site, args, flat, notes):
     return host, port
 
 
+OWNED_WITH_VALUE = ("--host", "--port", "--served-model-name", "--api-key", "--api-key-file", "--alias", "--name")
+
+
 def strip_owned(args):
     """SERVE_ARGS without the flags the launcher adds itself."""
     out, skip = [], False
@@ -164,10 +167,10 @@ def strip_owned(args):
         if skip:
             skip = False
             continue
-        if a in ("--host", "--port", "--served-model-name", "--api-key", "--api-key-file", "--alias"):
+        if a in OWNED_WITH_VALUE:
             skip = True
             continue
-        if a.split("=", 1)[0] in ("--host", "--port", "--served-model-name", "--api-key", "--api-key-file", "--alias"):
+        if a.split("=", 1)[0] in OWNED_WITH_VALUE or a == "--no-update-check":
             continue
         out.append(a)
     return out
@@ -190,8 +193,10 @@ def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace
         raise PlanError("%s still has FILL_ME in %s: answer its questions first (docs/05-recipe-method.md)"
                         % (recipe_file, ", ".join(unanswered)))
     engine = d["engine"]
-    if engine not in ("vllm", "llamacpp"):
-        raise PlanError("%s: ENGINE must be vllm or llamacpp (got: %s)" % (recipe_name, engine))
+    if engine not in ("vllm", "llamacpp", "tensorfold"):
+        raise PlanError("%s: ENGINE must be vllm, llamacpp or tensorfold (got: %s)" % (recipe_name, engine))
+    if engine == "tensorfold" and platform != "mac":
+        raise PlanError("%s: TensorFold serves on a Mac here (MLX); this is %s" % (recipe_name, platform))
     model = v.get("MODEL") or ""
     args = v.get("SERVE_ARGS", [])
     notes = []
@@ -200,7 +205,7 @@ def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace
     if not site.key:
         notes.append("ENGINE_KEY=off: the engine takes requests without a key, so it listens on %s only "
                      "unless ENGINE_BIND says otherwise" % site.bind)
-    if engine == "llamacpp":
+    if engine in ("llamacpp", "tensorfold"):
         runtime = "launchd" if platform == "mac" else "systemd"
     elif platform in ("dgx", "linux"):
         runtime = "docker"
@@ -584,6 +589,26 @@ def plan_native(site, p, c, facts, runtime, replace):
         if libs:
             env["LD_LIBRARY_PATH"] = ":".join(libs)
         p["engine_build"] = "llama.cpp %s %s" % (engines.LLAMACPP_BUILD, variant)
+    elif c["engine"] == "tensorfold":
+        venv = engines.tensorfold_dir(site.state)
+        exe = engines.tensorfold_bin(site.state)
+        steps.append(step(h, "venv", "TensorFold %s (%s) in a venv" % (engines.TENSORFOLD_VERSION, engines.TENSORFOLD_COMMIT[:7]),
+                          dest=venv, check=exe, package=engines.TENSORFOLD_PACKAGE,
+                          python=".".join(str(x) for x in engines.TENSORFOLD_PYTHON)))
+        artifact = v.get("ARTIFACT") or ""
+        rev = v.get("ARTIFACT_REVISION") or ""
+        steps.append(step(h, "weights", "the MLX checkpoint is here", repo=artifact, revision=rev, cache=site.hf_cache,
+                          recipe=c["recipe"], platform=c["platform"]))
+        model_dir = os.path.join(hub_dir(site.hf_cache, artifact), "snapshots", rev)
+        argv = [exe, "serve", model_dir, "--host", c["host"], "--port", str(c["port"]), "--name", c["name"],
+                "--no-update-check"]
+        if site.key:
+            argv += ["--api-key-file", site.key_file]     # 0600: TensorFold refuses a key file others can read
+        argv += strip_owned(args)
+        # local means local: no release check, no hub calls (rack pull fetched the checkpoint)
+        env.update({"TENSORFOLD_NO_UPDATE_CHECK": "1", "HF_HUB_OFFLINE": "1", "HF_HOME": site.hf_cache,
+                    "PYTHONUNBUFFERED": "1"})
+        p["engine_build"] = "TensorFold %s (%s)" % (engines.TENSORFOLD_VERSION, engines.TENSORFOLD_COMMIT[:7])
     else:                                            # vLLM from a venv (Windows without Docker)
         venv = os.path.join(site.state, "engines", "vllm", engines.VLLM_VERSION)
         steps.append(step(h, "venv", "vLLM %s in a venv" % engines.VLLM_VERSION, dest=venv,
@@ -735,9 +760,13 @@ def render(p, out=sys.stdout):
             body = "wait for %s, showing: %s" % (s["url"], shell(s["logs"]))
         elif k == "install":
             body = "install into %s: %s" % (s["dest"], ", ".join(a["url"].rsplit("/", 1)[-1] for a in s["assets"]))
+        elif k == "venv":
+            body = "pip install %s into %s (a venv on %s)" % (
+                s["package"], s["dest"], "Python %s or newer" % s["python"] if s.get("python") else "this Python")
         elif k == "weights":
-            body = "check %s in %s (rack pull %s --%s if missing)" % (s.get("artifact") or s.get("repo"), s["cache"],
-                                                                     s["recipe"], s["platform"])
+            body = "check %s%s in %s (rack pull %s --%s if missing)" % (
+                s.get("artifact") or s.get("repo"), " @ " + s["revision"][:12] if s.get("revision") else "",
+                s["cache"], s["recipe"], s["platform"])
         elif k == "free":
             body = "refuse if serving already: %s" % ", ".join(filter(None, [
                 " ".join(s.get("containers") or []) and "containers %s" % " ".join(s.get("containers") or []),
@@ -884,7 +913,7 @@ class Executor:
             return bool(resolve_gguf(s["file"], s["cache"], s["artifact"]))
         cache = n.hf_cache or s["cache"]
         code = ("import glob,json,os,sys\n"
-                "g=sorted(glob.glob(os.path.join(sys.argv[1],'snapshots','*','')))\n"
+                "g=sorted(glob.glob(os.path.join(sys.argv[1],'snapshots',sys.argv[2],'')))\n"
                 "ok=False\n"
                 "for p in g:\n"
                 " f=os.path.join(p,'model.safetensors.index.json')\n"
@@ -894,7 +923,8 @@ class Executor:
                 "  ok=bool(glob.glob(p+'*.safetensors'))\n"
                 " if ok: break\n"
                 "sys.exit(0 if ok else 1)\n")
-        return self.sh(n, ["python3", "-c", code, hub_dir(cache, s["repo"])]).returncode == 0
+        # a pinned revision must be that snapshot; otherwise any whole one will do
+        return self.sh(n, ["python3", "-c", code, hub_dir(cache, s["repo"]), s.get("revision") or "*"]).returncode == 0
 
     def do_reach(self, s):
         deadline = time.time() + s["timeout"]
@@ -969,7 +999,15 @@ class Executor:
     def do_venv(self, s):
         if os.path.exists(s["check"]):
             return
-        if subprocess.run([sys.executable, "-m", "venv", s["dest"]]).returncode != 0:
+        python = sys.executable
+        if s.get("python"):
+            want = tuple(int(x) for x in s["python"].split("."))
+            python = engines.python_at_least(want)
+            if not python:
+                raise PlanError("%s needs Python %s or newer and there is none here: brew install python@3.12 "
+                                "(or install uv: rack finds its Pythons)" % (s["package"].split(" ")[0], s["python"]))
+            self.say("   with %s" % python)
+        if subprocess.run([python, "-m", "venv", s["dest"]]).returncode != 0:
             raise PlanError("could not create a venv at %s (sudo apt install python3-venv)" % s["dest"])
         pip = os.path.join(s["dest"], "bin", "pip")
         if subprocess.run([pip, "install", "--upgrade", "pip"]).returncode != 0 or \

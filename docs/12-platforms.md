@@ -15,7 +15,7 @@ describe `rack` as it was before 1.0.*
 | DGX Spark (GB10) | `dgx` | vLLM, the rack's sm_121 image | Docker | `--restart unless-stopped`; one model across Sparks: a boot unit on the head | containers |
 | NVIDIA Linux, one or more GPUs | `linux` | vLLM (`vllm/vllm-openai`), or llama.cpp CUDA for small GPUs | Docker, or native for llama.cpp | the restart policy, or a systemd user unit | containers, or bare |
 | Windows 11 with WSL2 | `windows` | llama.cpp CUDA, or vLLM from a venv | native in WSL2 (Docker when it is there) | a systemd user unit | bare |
-| Apple Silicon Mac | `mac` | llama.cpp with Metal | native | launchd | bare |
+| Apple Silicon Mac | `mac` | llama.cpp with Metal, or TensorFold (MLX) | native | launchd | bare |
 
 **Supported for 1.0** (`rack init` refuses anything else and says why; dgx-serve
 never installs GPU drivers): DGX OS; Ubuntu 22.04 or 24.04 on x86_64 or arm64
@@ -148,9 +148,9 @@ The variables a recipe may set, besides `SERVE_ARGS`, `ENV_EXTRA` and `MODS`:
 | `ROLES` | model.env | what the app may send it: chat tools reasoning vision code embedding rerank draft |
 | `DIALECT_*` | model.env | client rules: `THINKING`, `EFFORT`, `STRIP_REASONING`, `ECHO_REASONING`, `MIN_MAX_TOKENS`, `SAMPLING` |
 | `GATEWAY_NAME` | model.env | its route on a LiteLLM gateway (default: the recipe's name) |
-| `ENGINE` | platform | `vllm` or `llamacpp` (dgx and linux default to vllm) |
+| `ENGINE` | platform | `vllm`, `llamacpp` or `tensorfold` (a Mac only; dgx and linux default to vllm) |
 | `IMAGE` | platform | a vLLM image (default: the rack's on a Spark, `vllm/vllm-openai:v0.26.0` on Linux) |
-| `ARTIFACT`, `ARTIFACT_REVISION`, `ARTIFACT_MMPROJ` | platform | llama.cpp's GGUF file, the commit, a vision projector |
+| `ARTIFACT`, `ARTIFACT_REVISION`, `ARTIFACT_MMPROJ` | platform | llama.cpp's GGUF file, the commit, a vision projector; for TensorFold the MLX checkpoint's repo (`<org>/<repo>`) and its 40-character commit (required) |
 | `WEIGHTS_GB` | platform | the download size, for `rack recipes --<platform>` |
 | `SERVED_NAME` | either | the model id the API serves (default: the recipe's name) |
 
@@ -227,6 +227,10 @@ engine.
   `~/.local/state/dgx-serve/logs/engine.log`.
 - **vLLM from a venv** (Windows without Docker): vLLM 0.26.0 in
   `~/.local/state/dgx-serve/engines/vllm/`, under a systemd user unit.
+- **TensorFold, natively** (mac): TensorFold 0.6.6 at one commit, in its own
+  venv under `~/.local/state/dgx-serve/engines/tensorfold/<commit>/`, under
+  launchd like llama.cpp, with its own `--api-key-file`, its `/metrics` and the
+  same `engine.log`. See [TensorFold](#tensorfold) below.
 
 `rack up` records what it started in `~/.local/state/dgx-serve/serving.json`
 (recipe, engine, runtime, nodes, port, roles, dialect, context); the monitor
@@ -354,6 +358,42 @@ llama.cpp build itself. Engines and the monitor run as launchd agents of your
 user (`~/Library/LaunchAgents/ai.bytebunker.dgx-serve.*.plist`), so they start
 at login. The first time an engine listens on `0.0.0.0`, macOS may ask whether
 to accept incoming connections.
+
+### TensorFold
+
+[TensorFold](https://github.com/ashhart/TensorFold) (Apache-2.0) serves MLX
+checkpoints on a Mac with lossless speculative decoding: it drafts tokens with
+the checkpoint's own MTP layer and keeps a draft only where it equals the
+model's greedy pick, so at temperature 0 drafts on and drafts off write the
+same bytes. `ENGINE=tensorfold` in a `mac.env`:
+
+```bash
+ENGINE=tensorfold
+. "$RECIPE_DIR/model.env"
+ARTIFACT=TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP        # an MLX checkpoint: <org>/<repo>
+ARTIFACT_REVISION=f84b054c5677b6e59bdb969ae61915b0983d68bb   # required: the snapshot it serves
+SERVE_ARGS=(--context 65536 --parallel 4)               # --no-drafts: one token a round
+```
+
+- **Pinned**: commit `cb2ebf0` (tag v0.6.6, 2026-10-06), installed with pip
+  from that commit into a venv on Python 3.11 or newer (`python3.11`+ on PATH,
+  else one `uv` has or installs). 0.6.6 is its last Python engine, and the last
+  that serves Qwen3.6 MoE: the native 1.0 engine refuses `qwen3_5_moe`.
+- **Launched** as `tensorfold serve <snapshot> --host --port --name
+  --no-update-check [--api-key-file]`; the launcher owns those, so a recipe
+  that sets `--name` or `--no-update-check` is an error.
+- **The engine key**: TensorFold checks keys itself (`Authorization: Bearer`
+  or `x-api-key`) from `--api-key-file`, which must not be readable by others
+  (rack's is 0600). `/health` stays open and then says only `ok`; `/metrics`
+  needs the key, as llama.cpp's does. `ENGINE_KEY=off` binds 127.0.0.1.
+- **Local means local**: it runs with `HF_HUB_OFFLINE=1` and
+  `TENSORFOLD_NO_UPDATE_CHECK=1`. Audited at the pinned commit: no telemetry;
+  its only outbound calls are a GitHub release check (off) and Hugging Face
+  downloads for a repo not in the cache (off: `rack pull` fetches the
+  checkpoint first). A Qwen3.6 checkpoint's MTP layer is `mtp-4bit.safetensors`
+  beside the weights; without it the engine still serves, without drafts.
+- **Measured against llama.cpp** on an M3 Max: `recipes/qwen36-a3b*` and
+  `bench/results.jsonl` (labels `qwen36-a3b-*`).
 
 ## Site settings
 
