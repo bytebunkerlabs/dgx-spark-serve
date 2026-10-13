@@ -423,7 +423,11 @@ $(workers)
 EOF
   fi
   echo; bold "nodes"
-  summary || true
+  if [ ! -s "$TOKEN_FILE" ]; then
+    dim "  none yet: rack monitor up starts it"     # no monitor has run here: nothing to ask
+    return 0
+  fi
+  summary 2>/dev/null || dim "  the monitor does not answer on :$MONITOR_PORT"
   endpoints
 }
 
