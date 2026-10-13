@@ -157,7 +157,8 @@ def host_port(site, args, flat, notes):
     return host, port
 
 
-OWNED_WITH_VALUE = ("--host", "--port", "--served-model-name", "--api-key", "--api-key-file", "--alias", "--name")
+OWNED_WITH_VALUE = ("--host", "--port", "--served-model-name", "--api-key", "--api-key-file", "--alias", "--name",
+                    "--drafter")
 
 
 def strip_owned(args):
@@ -602,6 +603,12 @@ def plan_native(site, p, c, facts, runtime, replace):
         model_dir = os.path.join(hub_dir(site.hf_cache, artifact), "snapshots", rev)
         argv = [exe, "serve", model_dir, "--host", c["host"], "--port", str(c["port"]), "--name", c["name"],
                 "--no-update-check"]
+        drafter = v.get("DRAFTER")
+        if drafter:                                   # a separate draft model (DFlash), pulled beside the weights
+            drev = v.get("DRAFTER_REVISION") or ""
+            steps.append(step(h, "weights", "the draft model is here", repo=drafter, revision=drev, cache=site.hf_cache,
+                              recipe=c["recipe"], platform=c["platform"]))
+            argv += ["--drafter", os.path.join(hub_dir(site.hf_cache, drafter), "snapshots", drev)]
         if site.key:
             argv += ["--api-key-file", site.key_file]     # 0600: TensorFold refuses a key file others can read
         argv += strip_owned(args)

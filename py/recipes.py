@@ -31,10 +31,11 @@ FLAT_PLATFORMS = ["dgx", "linux"]
 ENGINES = ["vllm", "llamacpp", "tensorfold"]
 MAC_ENGINES = ["llamacpp", "tensorfold"]
 # flags the launcher sets on a TensorFold engine (the served name, and never a release check)
-TENSORFOLD_OWNED = ["--name", "--no-update-check"]
+TENSORFOLD_OWNED = ["--name", "--no-update-check", "--drafter"]
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 ROLES = ["chat", "tools", "reasoning", "vision", "code", "embedding", "rerank", "draft"]
 SCALARS = ["MODEL", "MODEL_REVISION", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
+           "DRAFTER", "DRAFTER_REVISION",
            "ROLES", "WEIGHTS_GB", "SERVED_NAME", "GATEWAY_NAME"]
 ARRAYS = ["SERVE_ARGS", "ENV_EXTRA", "MODS"]
 OWNED_FLAGS = ["--host", "--port", "--api-key", "--api-key-file"]
@@ -334,6 +335,8 @@ def describe(v, platform, flat):
         mtp = flag(args, "--mtp-drafts")
         if flag(args, "--no-drafts") or mtp == "0":
             d["speculative"] = None
+        elif v.get("DRAFTER"):
+            d["speculative"] = {"method": "dflash", "model": v["DRAFTER"]}
         else:
             d["speculative"] = {"method": "mtp", "tokens": int(mtp) if isinstance(mtp, str) and mtp.isdigit() else None}
         d["quantization"] = "mlx"
@@ -401,8 +404,15 @@ def semantic(v, platform, flat, path, problems):
                                     "the launcher points it at that snapshot (got: %s)" % (r or "nothing"))
         for f in TENSORFOLD_OWNED:
             if flag(v.get("SERVE_ARGS", []), f) is not None:
-                problems.error(path, 0, "%s is the launcher's (rack up sets the served name and turns the "
-                                        "release check off)" % f)
+                problems.error(path, 0, "%s is the launcher's (rack up sets the served name, the draft model "
+                                        "from DRAFTER, and turns the release check off)" % f)
+        dr, drr = v.get("DRAFTER", ""), v.get("DRAFTER_REVISION", "")
+        if dr and not re.match(r"^[^/\s]+/[^/\s]+$", dr):
+            problems.error(path, 0, "DRAFTER is a draft model's repo, <org>/<repo> (got: %s)" % dr)
+        if dr and not COMMIT.match(drr):
+            problems.error(path, 0, "DRAFTER needs DRAFTER_REVISION=<its 40-character commit> (got: %s)" % (drr or "nothing"))
+    elif v.get("DRAFTER") or v.get("DRAFTER_REVISION"):
+        problems.error(path, 0, "DRAFTER is TensorFold's (ENGINE=tensorfold); vLLM and llama.cpp take theirs in SERVE_ARGS")
     if engine == "llamacpp":
         a = v.get("ARTIFACT", "")
         if "FILL_ME" not in a and not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):
@@ -509,8 +519,11 @@ def pull_spec(file, recipe_dir, root, platform, config=None):
         a = v.get("ARTIFACT") or ""
         if not re.match(r"^[^/\s]+/[^/\s]+$", a):
             raise ValueError("ARTIFACT must be <org>/<repo>, an MLX checkpoint (got: %s)" % (a or "nothing"))
-        return {"engine": engine, "pulls": [{"repo": a, "revision": v.get("ARTIFACT_REVISION") or "main", "weights": True}],
-                "model": v.get("MODEL") or None, "context": d["context"], "kv_fp8": False}
+        pulls = [{"repo": a, "revision": v.get("ARTIFACT_REVISION") or "main", "weights": True}]
+        if v.get("DRAFTER"):
+            pulls.append({"repo": v["DRAFTER"], "revision": v.get("DRAFTER_REVISION") or "main", "weights": True})
+        return {"engine": engine, "pulls": pulls, "model": v.get("MODEL") or None, "context": d["context"],
+                "kv_fp8": False}
     if engine == "llamacpp":
         a = v.get("ARTIFACT") or ""
         if not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):

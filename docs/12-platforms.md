@@ -151,6 +151,7 @@ The variables a recipe may set, besides `SERVE_ARGS`, `ENV_EXTRA` and `MODS`:
 | `ENGINE` | platform | `vllm`, `llamacpp` or `tensorfold` (a Mac only; dgx and linux default to vllm) |
 | `IMAGE` | platform | a vLLM image (default: the rack's on a Spark, `vllm/vllm-openai:v0.26.0` on Linux) |
 | `ARTIFACT`, `ARTIFACT_REVISION`, `ARTIFACT_MMPROJ` | platform | llama.cpp's GGUF file, the commit, a vision projector; for TensorFold the MLX checkpoint's repo (`<org>/<repo>`) and its 40-character commit (required) |
+| `DRAFTER`, `DRAFTER_REVISION` | platform | TensorFold only: a separate draft model's repo (`<org>/<repo>`, a DFlash model) and its 40-character commit; `rack pull` fetches it and `rack up` passes it as `--drafter` |
 | `WEIGHTS_GB` | platform | the download size, for `rack recipes --<platform>` |
 | `SERVED_NAME` | either | the model id the API serves (default: the recipe's name) |
 
@@ -392,6 +393,13 @@ SERVE_ARGS=(--context 65536 --parallel 4)               # --no-drafts: one token
   downloads for a repo not in the cache (off: `rack pull` fetches the
   checkpoint first). A Qwen3.6 checkpoint's MTP layer is `mtp-4bit.safetensors`
   beside the weights; without it the engine still serves, without drafts.
+- **Draft models**: a checkpoint with its own MTP layer (Qwen3.6 MoE,
+  Nemotron 3.5) drafts with it; Qwen3.8-27B drafts with a separate DFlash
+  model, named by `DRAFTER`. Gemma 4 has no published draft model, so its
+  recipe serves without drafts.
+- **The `-tf` recipes**, each the same model as the recipe without the suffix:
+  `qwen36-a3b-tf` (and `-nodraft`), `qwen3.8-27b-tf`, `nemotron-3.5-lightning-tf`,
+  `gemma-4-26b-a4b-tf`. Text only: TensorFold's vision extra is not installed.
 - **Measured against llama.cpp** on an M3 Max: `recipes/qwen36-a3b*` and
   `bench/results.jsonl` (labels `qwen36-a3b-*`).
 
