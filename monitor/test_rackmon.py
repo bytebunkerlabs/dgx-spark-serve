@@ -139,6 +139,23 @@ class Parsers(unittest.TestCase):
         self.assertEqual(rackmon.engine_kind("# HELP x\nllamacpp:prompt_tokens_total 5\n"), "llama.cpp")
         self.assertIsNone(rackmon.engine_kind("litellm_requests_total 4\nnode_load1 0.1\n"))
 
+    def test_tensorfold(self):
+        """TensorFold 0.6.6's /metrics: its MTP drafts read as speculative decoding."""
+        text = ("# TYPE tensorfold:requests_running gauge\ntensorfold:requests_running 1\n"
+                "tensorfold:requests_waiting 0\n"
+                'tensorfold:kv_cache_usage_ratio{pool="0"} 0.25\ntensorfold:kv_cache_usage_ratio{pool="1"} 0.5\n'
+                "tensorfold:generation_tokens_total 900\ntensorfold:prompt_tokens_total 120\n"
+                "tensorfold:mtp_drafted_total 600\ntensorfold:mtp_accepted_total 450\n"
+                'tensorfold:time_to_first_token_seconds_bucket{le="+Inf"} 3\n'
+                "tensorfold:time_to_first_token_seconds_sum 1.5\ntensorfold:time_to_first_token_seconds_count 3\n"
+                "tensorfold:num_requests_running 1\n")
+        self.assertEqual(rackmon.engine_kind(text), "tensorfold")
+        s = rackmon.summarize_engine("tensorfold", rackmon.parse_prom(text))
+        self.assertEqual((s["running"], s["waiting"], s["kv_pct"], s["gen_total"], s["prompt_total"]),
+                         (1, 0, 50.0, 900.0, 120.0))
+        self.assertEqual((s["spec_draft_tokens"], s["spec_accepted"], s["ttft"]["count"]), (600.0, 450.0, 3.0))
+        self.assertEqual(rackmon.proc_label("/x/engines/tensorfold/abc/bin/tensorfold\0serve\0m", "?"), "tensorfold")
+
     def test_quantile(self):
         b = {0.1: 10.0, 0.5: 30.0, 1.0: 40.0, float("inf"): 42.0}
         self.assertAlmostEqual(rackmon.hist_quantile(0.5, b), 0.5 * 0 + 0.1 + (0.4 * (21 - 10) / 20), places=6)

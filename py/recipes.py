@@ -28,9 +28,14 @@ import rackfit  # noqa: E402
 
 PLATFORMS = ["dgx", "linux", "windows", "mac"]
 FLAT_PLATFORMS = ["dgx", "linux"]
-ENGINES = ["vllm", "llamacpp"]
+ENGINES = ["vllm", "llamacpp", "tensorfold"]
+MAC_ENGINES = ["llamacpp", "tensorfold"]
+# flags the launcher sets on a TensorFold engine (the served name, and never a release check)
+TENSORFOLD_OWNED = ["--name", "--no-update-check", "--drafter"]
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
 ROLES = ["chat", "tools", "reasoning", "vision", "code", "embedding", "rerank", "draft"]
 SCALARS = ["MODEL", "MODEL_REVISION", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
+           "DRAFTER", "DRAFTER_REVISION",
            "ROLES", "WEIGHTS_GB", "SERVED_NAME", "GATEWAY_NAME"]
 ARRAYS = ["SERVE_ARGS", "ENV_EXTRA", "MODS"]
 OWNED_FLAGS = ["--host", "--port", "--api-key", "--api-key-file"]
@@ -322,7 +327,20 @@ def describe(v, platform, flat):
     except ValueError:
         d["weights_gb"] = None
     roles = (v.get("ROLES") or "").split()
-    if engine == "llamacpp":
+    if engine == "tensorfold":
+        ctx = flag(args, "--context")
+        d["context"] = human_int(ctx) if isinstance(ctx, str) else None
+        d["reasoning"] = None if flag(args, "--no-thinking") else "thinking"
+        d["vision"] = False                    # its vision extra is not installed
+        mtp = flag(args, "--mtp-drafts")
+        if flag(args, "--no-drafts") or mtp == "0":
+            d["speculative"] = None
+        elif v.get("DRAFTER"):
+            d["speculative"] = {"method": "dflash", "model": v["DRAFTER"]}
+        else:
+            d["speculative"] = {"method": "mtp", "tokens": int(mtp) if isinstance(mtp, str) and mtp.isdigit() else None}
+        d["quantization"] = "mlx"
+    elif engine == "llamacpp":
         ctx = flag(args, "--ctx-size", "-c")
         d["context"] = human_int(ctx) if isinstance(ctx, str) else None
         d["tools"] = "jinja" if flag(args, "--jinja") else None
@@ -371,9 +389,30 @@ def semantic(v, platform, flat, path, problems):
     engine = engine_of(v, platform, flat)
     if not flat:
         if engine not in ENGINES:
-            problems.error(path, 0, "ENGINE must be vllm or llamacpp (got: %s)" % (engine or "nothing"))
-        if platform == "mac" and engine != "llamacpp":
-            problems.error(path, 0, "a Mac serves with llama.cpp (ENGINE=llamacpp)")
+            problems.error(path, 0, "ENGINE must be vllm, llamacpp or tensorfold (got: %s)" % (engine or "nothing"))
+        if platform == "mac" and engine not in MAC_ENGINES:
+            problems.error(path, 0, "a Mac serves with llama.cpp (ENGINE=llamacpp) or TensorFold (ENGINE=tensorfold)")
+        if engine == "tensorfold" and platform != "mac":
+            problems.error(path, 0, "TensorFold serves on a Mac here (MLX): put it in mac.env")
+    if engine == "tensorfold":
+        a = v.get("ARTIFACT", "")
+        if "FILL_ME" not in a and not re.match(r"^[^/\s]+/[^/\s]+$", a):
+            problems.error(path, 0, "TensorFold needs ARTIFACT=<org>/<repo>, an MLX checkpoint (got: %s)" % (a or "nothing"))
+        r = v.get("ARTIFACT_REVISION", "")
+        if "FILL_ME" not in r and not COMMIT.match(r):
+            problems.error(path, 0, "TensorFold needs ARTIFACT_REVISION=<the repo's 40-character commit>: "
+                                    "the launcher points it at that snapshot (got: %s)" % (r or "nothing"))
+        for f in TENSORFOLD_OWNED:
+            if flag(v.get("SERVE_ARGS", []), f) is not None:
+                problems.error(path, 0, "%s is the launcher's (rack up sets the served name, the draft model "
+                                        "from DRAFTER, and turns the release check off)" % f)
+        dr, drr = v.get("DRAFTER", ""), v.get("DRAFTER_REVISION", "")
+        if dr and not re.match(r"^[^/\s]+/[^/\s]+$", dr):
+            problems.error(path, 0, "DRAFTER is a draft model's repo, <org>/<repo> (got: %s)" % dr)
+        if dr and not COMMIT.match(drr):
+            problems.error(path, 0, "DRAFTER needs DRAFTER_REVISION=<its 40-character commit> (got: %s)" % (drr or "nothing"))
+    elif v.get("DRAFTER") or v.get("DRAFTER_REVISION"):
+        problems.error(path, 0, "DRAFTER is TensorFold's (ENGINE=tensorfold); vLLM and llama.cpp take theirs in SERVE_ARGS")
     if engine == "llamacpp":
         a = v.get("ARTIFACT", "")
         if "FILL_ME" not in a and not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):
@@ -470,11 +509,21 @@ def read_recipe(name, location, source_kind, root, here=None, budget_mb=None, on
 
 def pull_spec(file, recipe_dir, root, platform, config=None):
     """What `rack pull <recipe>` fetches for one variant: the repo, the
-    revision, and either exact files (llama.cpp's GGUF) or vLLM's weights."""
+    revision, and either exact files (llama.cpp's GGUF) or a repo's weights
+    (vLLM's, or TensorFold's MLX checkpoint)."""
     flat = os.path.basename(file) not in [p + ".env" for p in PLATFORMS]
     v = source(file, recipe_dir, root, config)
     engine = engine_of(v, platform, flat)
     d = describe(v, platform, flat)
+    if engine == "tensorfold":
+        a = v.get("ARTIFACT") or ""
+        if not re.match(r"^[^/\s]+/[^/\s]+$", a):
+            raise ValueError("ARTIFACT must be <org>/<repo>, an MLX checkpoint (got: %s)" % (a or "nothing"))
+        pulls = [{"repo": a, "revision": v.get("ARTIFACT_REVISION") or "main", "weights": True}]
+        if v.get("DRAFTER"):
+            pulls.append({"repo": v["DRAFTER"], "revision": v.get("DRAFTER_REVISION") or "main", "weights": True})
+        return {"engine": engine, "pulls": pulls, "model": v.get("MODEL") or None, "context": d["context"],
+                "kv_fp8": False}
     if engine == "llamacpp":
         a = v.get("ARTIFACT") or ""
         if not re.match(r"^[^/\s]+/[^/\s]+/.+\.gguf$", a):
