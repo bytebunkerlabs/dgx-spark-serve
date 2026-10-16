@@ -1,0 +1,21 @@
+--- tensorfold/families/nemotron_h/model.py.orig	2026-10-16 09:26:11
++++ tensorfold/families/nemotron_h/model.py	2026-10-16 09:26:34
+@@ -426,9 +426,15 @@
+             mx.eval(bias)
+             self._mtp_gate_bias = bias
+         experts, weights = route(router_logits(normed, mixer.gate.weight), bias, fused.top_k, fused.scaling)
+-        routed = rows.experts(mixer.switch_mlp, normed, experts)
+-        _, out = add_norm_moe(h, routed, weights, mixer.shared_experts(normed), second.final_layernorm.weight,
+-                              fused.eps)
++        if getattr(mixer, "moe_latent_size", None) is not None:
++            routed = rows.experts(mixer.switch_mlp, mixer.fc1_latent_proj(normed), experts)
++            moe = (routed * weights[..., None]).sum(axis=-2).astype(routed.dtype)
++            moe = mixer.fc2_latent_proj(moe)
++            _, out = add_norm(h, moe + mixer.shared_experts(normed), second.final_layernorm.weight, fused.eps)
++        else:
++            routed = rows.experts(mixer.switch_mlp, normed, experts)
++            _, out = add_norm_moe(h, routed, weights, mixer.shared_experts(normed), second.final_layernorm.weight,
++                                  fused.eps)
+         return out[None]
+ 
+     def draft_streams(self, caches: list[list[Any]], follows: list[list[int]], rows: list[list[int]],

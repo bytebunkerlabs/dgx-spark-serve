@@ -15,7 +15,7 @@ import tarfile
 VLLM_IMAGE = {"dgx": "dgx-spark-serve:dev", "linux": "vllm/vllm-openai:v0.26.0"}
 VLLM_VERSION = "0.26.0"          # the venv's vLLM, matching the image above
 
-LLAMACPP_BUILD = "b11430"        # 2026-10-05
+LLAMACPP_BUILD = "b11675"        # 2026-10-16 (adds NemotronHPuzzle load support)
 LLAMACPP_URL = "https://github.com/ggml-org/llama.cpp/releases/download/%s/%%s" % LLAMACPP_BUILD
 # variant -> [(asset, sha256)], the GitHub release's own digests
 LLAMACPP_ASSETS = {

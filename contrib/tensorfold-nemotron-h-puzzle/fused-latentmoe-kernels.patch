@@ -1,0 +1,30 @@
+--- tensorfold/kernels/nemotron/lightning/v1/kernels.py.orig	2026-10-16 09:26:11
++++ tensorfold/kernels/nemotron/lightning/v1/kernels.py	2026-10-16 09:26:26
+@@ -532,9 +532,17 @@
+ 
+     def _moe_block(self, index: int, nxt: mx.array) -> Any:
+         mixer = self.layers[index].mixer
++        latent = getattr(mixer, "moe_latent_size", None) is not None
+ 
+         def block(x: mx.array, xs: mx.array, h: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+             routed, weights, shared = self._moe(index, mixer, self._use_sums(x, xs), xs)
++            if latent:
++                # routed is on the latent dim: weighted-sum the experts (weights sum
++                # to 1 under norm_topk_prob), project back to hidden, add the shared
++                # expert, then the usual residual + next-layer norm.
++                moe = (routed * weights[..., None]).sum(axis=-2).astype(routed.dtype)
++                moe = mixer.fc2_latent_proj(moe)
++                return self._add_norm(h, moe + shared, nxt, xs)
+             if not self.lane_xs:
+                 return (*add_norm_moe(h, routed, weights, shared, nxt, self.eps), xs)
+             return add_norm_moe(h, routed, weights, shared, nxt, self.eps, group_sums=True)
+@@ -621,5 +629,8 @@
+             experts, weights, tables = row_kernels.route_group(logits, self.gate_bias[index], self.top_k, self.scaling)
+         else:
+             experts, weights = route(logits, self.gate_bias[index], self.top_k, self.scaling)
+-        routed = row_kernels.experts(mixer.switch_mlp, x, experts, grouped=grouped, tables=tables)
++        # LatentMoE (e.g. Nemotron Puzzle): experts run on the latent dim, so the
++        # input is projected down first; the gate and shared expert stay on hidden.
++        expert_in = mixer.fc1_latent_proj(x) if getattr(mixer, "moe_latent_size", None) is not None else x
++        routed = row_kernels.experts(mixer.switch_mlp, expert_in, experts, grouped=grouped, tables=tables)
+         return routed, weights, self._shared(mixer.shared_experts, x, xs)
