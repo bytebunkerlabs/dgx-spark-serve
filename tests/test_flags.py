@@ -152,7 +152,7 @@ class Version(Base):
         m = self.machine(dgx_spark)
         d = rack_json(m.rack("version", "--json"))
         self.assertEqual((d["schema"], d["json_schema"], d["recipe_schema"], d["monitor_schema"]), (1, 1, 2, 1))
-        self.assertEqual(d["engines"]["llama.cpp"], "b11430")
+        self.assertEqual(d["engines"]["llama.cpp"], "b11675")
         self.assertIn('"json_schema":1,', m.rack("version", "--json").stdout)       # what --on greps for
         self.assertRegex(m.rack("version").stdout, r"^rack 1\.0\.0-dev")
 

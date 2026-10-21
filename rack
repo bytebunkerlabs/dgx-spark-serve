@@ -14,6 +14,7 @@
 #   rack down                  stop everything
 #   rack status                what's running, on both nodes
 #   rack logs [-f]             head and worker logs
+#   rack keep [on|off|status]  serve it again when the engine dies (cron; on with rack up)
 #   rack bench [label]         measure the running model
 #   rack chat  <text>          one-shot completion against it
 #   rack monitor up            telemetry for every node, one endpoint for the app
@@ -108,6 +109,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack down                   stop serving on every node
   rack status                 containers, memory, API health
   rack logs [-f] [<node>|worker]   engine logs
+  rack keep [on|off|status]   a dead engine is served again: cron asks every 2 min (on with rack up, off with down)
   rack bench [label]          measure the running model
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, every node
@@ -560,6 +562,31 @@ cmd_up() {
       monitor_env "$ROOT/monitor/rack-monitor.sh" ensure || warn "monitor: did not start (rack monitor up)"
     fi
   fi
+  # an engine that dies is served again (rack keep); its line goes to stderr, as the monitor's with --json
+  [ "$PLAN" = 1 ] || keep_follow on >&2
+}
+
+# rack keep: cron asks the engine's /health every 2 minutes and serves the recipe again when
+# it stays dead (py/keep.py). rack up turns it on where cron is, rack down off; KEEP=0 in
+# rack.env leaves it off.
+cmd_keep() {
+  case "${1:-check}" in
+    check|on|off|status) ;;
+    -h|--help|help) echo "usage: rack keep [on|off|status]   (no argument: one check, as cron runs it)"; return 0 ;;
+    *) die "usage: rack keep [on|off|status]" ;;
+  esac
+  [ "$IS_HEAD" = 1 ] || die "rack keep runs on the machine that serves"
+  have crontab || die "rack keep needs cron (crontab), which this machine does not have"
+  DGX_SERVE_STATE=$DGX_SERVE_STATE KEEP_GRACE_MIN=${KEEP_GRACE_MIN:-} KEEP_GAP_MIN=${KEEP_GAP_MIN:-} \
+    KEEP_MAX_PER_DAY=${KEEP_MAX_PER_DAY:-} python3 "$ROOT/py/keep.py" "${1:-check}" --rack "$ROOT/rack"
+}
+
+# rack up and rack down switch keep on and off where it can work (cron, a Linux engine)
+keep_follow() {
+  [ "${KEEP:-1}" != 0 ] && have crontab || return 0
+  case "$(this_platform)" in dgx|linux|windows) ;; *) return 0 ;; esac
+  DGX_SERVE_STATE=$DGX_SERVE_STATE python3 "$ROOT/py/keep.py" "$1" --rack "$ROOT/rack" \
+    || warn "keep: could not turn it $1 (rack keep $1)"
 }
 
 cmd_down() {
@@ -572,7 +599,9 @@ cmd_down() {
   fi
   platform_detect
   local pf=(); [ "$PLAN" = 1 ] && pf+=(--plan); [ "$JSON" = 1 ] && pf+=(--json)
-  serve_py down ${pf[@]+"${pf[@]}"}
+  serve_py down ${pf[@]+"${pf[@]}"} || return 1
+  # nothing to bring back now: cron stops asking
+  [ "$PLAN" = 1 ] || keep_follow off >&2
 }
 
 # py/serve.py, with the site in its environment: the nodes (head first) and
@@ -823,7 +852,7 @@ done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 if [ -n "$ON_NODE" ]; then
   case "${1:-}" in
-    init|nodes|install|pair|unpair|remote|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
+    init|nodes|install|pair|unpair|remote|keep|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
   esac
   inv_has "$ON_NODE" || die "no such node: $ON_NODE  (rack nodes)"
   on_plat=$(inv_get "$ON_NODE" NODE_PLATFORM) on_plan=0
@@ -864,6 +893,7 @@ case "${1:-}" in
   pair)      shift; cmd_pair "$@" ;;
   unpair)    shift; cmd_unpair "$@" ;;
   remote)    shift; cmd_remote "$@" ;;
+  keep)      shift; cmd_keep "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (rack --help)" ;;
 esac

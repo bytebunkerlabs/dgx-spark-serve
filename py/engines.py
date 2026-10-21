@@ -20,23 +20,23 @@ LLAMACPP_URL = "https://github.com/ggml-org/llama.cpp/releases/download/%s/%%s" 
 # variant -> [(asset, sha256)], the GitHub release's own digests
 LLAMACPP_ASSETS = {
     "macos-arm64": [
-        ("llama-b11430-bin-macos-arm64.tar.gz",
-         "74887f462706d17b01ae701f1e3aa571afa7f629628445d9cdfac923b4fe5b74")],
+        ("llama-b11675-bin-macos-arm64.tar.gz",
+         "4a2c2a12a9061f5daeef79b5a0e0d172c4872e4f039828ad24a6eb4f0f9b3fa4")],
     "cuda-12.8-x64": [
-        ("llama-b11430-bin-ubuntu-cuda-12.8-x64.tar.gz",
-         "8f79f75093e8fb6d9c65e59167511e9547776794191073e488ce81efd5ade723"),
-        ("cudart-llama-b11430-bin-ubuntu-cuda-12.8-x64.tar.gz",
-         "0db934433d96342cf30b2c85b0673d89537b1d0d029a3bf28ccb4db68622e8ca")],
+        ("llama-b11675-bin-ubuntu-cuda-12.8-x64.tar.gz",
+         "5968303a119823017ec54e6448c5443bb4a9b97526ac617317c7ef7d9445b97c"),
+        ("cudart-llama-b11675-bin-ubuntu-cuda-12.8-x64.tar.gz",
+         "f8aa995a09bf67d2f19a6489ce856c9d51b1773e0bc515ed7271b67c982795cd")],
     "cuda-13.4-x64": [
-        ("llama-b11430-bin-ubuntu-cuda-13.4-x64.tar.gz",
-         "cbfe295c3d18b398aa3031af7344efbef90e4dd66cf18af0d70a8e1a238a7277"),
-        ("cudart-llama-b11430-bin-ubuntu-cuda-13.4-x64.tar.gz",
-         "3186e8912a818b41dcc5fd94ee0d1a4a7d2b7c6a319f421d5123fad32f7a65d7")],
+        ("llama-b11675-bin-ubuntu-cuda-13.4-x64.tar.gz",
+         "e68773e1aeff0b2b325814d4349cacdc26022fa90ba6680de11b8818104ae5fd"),
+        ("cudart-llama-b11675-bin-ubuntu-cuda-13.4-x64.tar.gz",
+         "ba40ab0f97380065bb77cb39a400fda0b7e91aa618eefb46887d8fca0031915c")],
     "cuda-13.4-arm64": [
-        ("llama-b11430-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-         "76053e9e3d02c920ef56a6b9e6335d16bfcd1976f3d02d3ae9da48c7a8f3bc00"),
-        ("cudart-llama-b11430-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-         "8a42053d0f764a2012953e5188e5035e4e7b724f48d3431de5d9396fccbbf217")],
+        ("llama-b11675-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+         "410209bb3e9300e0e68db55bb90a2aca7f7c4e53a5162bd2479fd7df85627d34"),
+        ("cudart-llama-b11675-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+         "184a5cd33c3ea71eafdc570c476071d498380e337e2b7cb963b253576b8f5ed0")],
 }
 
 

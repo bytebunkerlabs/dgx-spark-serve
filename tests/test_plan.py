@@ -101,10 +101,10 @@ class Plans(Base):
                          ["free", "install", "weights", "run", "write", "run", "run", "run", "wait", "record"])
         inst = steps(p, "install")[0]
         self.assertEqual(inst["assets"][0]["url"],
-                         "https://github.com/ggml-org/llama.cpp/releases/download/b11430/llama-b11430-bin-macos-arm64.tar.gz")
+                         "https://github.com/ggml-org/llama.cpp/releases/download/b11675/llama-b11675-bin-macos-arm64.tar.gz")
         job = plistlib.loads(steps(p, "write")[0]["content"].encode())
         args = job["ProgramArguments"]
-        self.assertTrue(args[0].endswith("/engines/llama.cpp/b11430-macos-arm64/llama-b11430/llama-server"))
+        self.assertTrue(args[0].endswith("/engines/llama.cpp/b11675-macos-arm64/llama-b11675/llama-server"))
         gguf = after(args, "-m")[0]
         self.assertTrue(gguf.endswith("/hub/models--Qwen--Qwen3-8B-GGUF/snapshots/%s/Qwen3-8B-Q4_K_M.gguf" % QWEN_REV))
         self.assertEqual((after(args, "--alias"), after(args, "--port"), after(args, "--ctx-size")),
@@ -151,12 +151,12 @@ class Plans(Base):
         p = self.plan(m, "qwen3-8b")
         self.assertEqual((p["runtime"], p["engine"], p["memory_cap_gb"]), ("systemd", "llamacpp", 11))
         names = [a["url"].rsplit("/", 1)[-1] for a in steps(p, "install")[0]["assets"]]
-        self.assertEqual(names, ["llama-b11430-bin-ubuntu-cuda-12.8-x64.tar.gz",
-                                 "cudart-llama-b11430-bin-ubuntu-cuda-12.8-x64.tar.gz"])
+        self.assertEqual(names, ["llama-b11675-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                                 "cudart-llama-b11675-bin-ubuntu-cuda-12.8-x64.tar.gz"])
         unit = [s for s in steps(p, "write") if s["path"].endswith("dgx-serve-engine.service")][0]["content"]
         self.assertIn("Restart=on-failure", unit)
         self.assertIn("MemoryMax=11G", unit)
-        self.assertRegex(unit, r"Environment=LD_LIBRARY_PATH=\S+/llama-b11430:\S+/cudart-llama-b11430-bin-ubuntu-cuda-12.8-x64")
+        self.assertRegex(unit, r"Environment=LD_LIBRARY_PATH=\S+/llama-b11675:\S+/cudart-llama-b11675-bin-ubuntu-cuda-12.8-x64")
         self.assertRegex(unit, r"ExecStart=\S+/llama-server -m \S+Qwen3-8B-Q4_K_M.gguf --host 0.0.0.0 --port 8888 "
                                r"--alias qwen3-8b --metrics --api-key-file \S+engine.key --n-gpu-layers 999 --ctx-size 8192")
         self.assertEqual(runs(p)[-3:], [["systemctl", "--user", "daemon-reload"],
@@ -436,7 +436,7 @@ class Execute(Base):
     def test_mac_up_and_down(self):
         m = self.machine(mac_m4, name="mini")
         state = os.path.join(m.home, ".local", "state", "dgx-serve")
-        server = os.path.join(state, "engines", "llama.cpp", "b11430-macos-arm64", "llama-b11430", "llama-server")
+        server = os.path.join(state, "engines", "llama.cpp", "b11675-macos-arm64", "llama-b11675", "llama-server")
         os.makedirs(os.path.dirname(server))
         open(server, "w").close()                                       # installed already: no download
         repo = os.path.join(m.home, "dgx", "hf", "hub", "models--Qwen--Qwen3-8B-GGUF")
