@@ -54,6 +54,11 @@ class Engine(BaseHTTPRequestHandler):
         if self.path == "/tokenize":
             self.reply(200, {"count": 42})
             return
+        if (body.get("max_tokens") or 0) > 5000:            # vLLM's own words for a prompt + answer too big
+            self.reply(400, {"error": {"message": "This model's maximum context length is 5000 tokens. However, you "
+                             "requested %d output tokens and your prompt contains at least 100 input tokens, for a total "
+                             "of at least %d tokens." % (body["max_tokens"], body["max_tokens"] + 100)}})
+            return
         last = next((m for m in reversed(body.get("messages") or []) if m["role"] in ("user", "tool")), {})
         text = last.get("content") if isinstance(last.get("content"), str) else json.dumps(last.get("content"))
         if "fail" in text:
@@ -108,7 +113,7 @@ class GateTest(unittest.TestCase):
         port = cls.engine.server_address[1]
         with open(os.path.join(d, "serving.json"), "w") as f:
             json.dump({"served_name": "glm-served", "gateway_name": "glm-5.3", "port": port, "key_required": True,
-                       "dialect": {"thinking": "chat_template_kwargs.enable_thinking"}}, f)
+                       "dialect": {"thinking": "chat_template_kwargs.enable_thinking"}, "context": 131072}, f)
         with open(os.path.join(d, "engine.key"), "w") as f:
             f.write(ENGINE_KEY + "\n")
         with open(os.path.join(d, "gate.json"), "w") as f:
@@ -271,6 +276,17 @@ class GateTest(unittest.TestCase):
         self.assertIn("the engine refuses", d["error"]["message"])
         st, d, _ = self.req("POST", "/v1/messages", {"model": "gpt-9", "max_tokens": 10, "messages": []}, self.ANTH)
         self.assertEqual((st, d["error"]["type"]), (404, "not_found_error"))
+
+    def test_an_answer_too_big_for_the_window_is_fitted(self):
+        # Claude Code asks for 128k: capped to the window first, then the engine's own numbers on its refusal
+        before = len(Engine.seen)
+        st, d, _ = self.req("POST", "/v1/messages", {"model": "claude-code", "max_tokens": 131000,
+                                                     "messages": [{"role": "user", "content": "hi"}]}, self.ANTH)
+        self.assertEqual(st, 200, d)
+        sent = [b["max_tokens"] for p, b, _ in Engine.seen[before:] if p == "/v1/chat/completions"]
+        self.assertLess(sent[0], 131000)                   # the cap from serving.json's context
+        self.assertEqual(sent[-1], 5000 - 100 - 16)        # the retry, from what the engine said
+        self.assertEqual(len(sent), 2)
 
     def test_count_tokens_asks_the_engine(self):
         st, d, _ = self.req("POST", "/v1/messages/count_tokens", {"model": "glm-5.3",

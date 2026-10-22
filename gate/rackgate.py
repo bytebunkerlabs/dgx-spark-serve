@@ -16,6 +16,7 @@ GATE_KEYS (keys.json), GATE_ENGINE_KEY (the engine's key file), GATE_STATE
 """
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
@@ -103,8 +104,9 @@ def allowed(client, model):
 
 # ----------------------------------------------------------------- routes --
 class Route:
-    def __init__(self, name, url, model, key="", thinking=""):
+    def __init__(self, name, url, model, key="", thinking="", context=0):
         self.name, self.url, self.model, self.key, self.thinking = name, url.rstrip("/"), model, key, thinking
+        self.context = int(context or 0)       # the engine's window, when known (serving.json, gate.json)
 
     def root(self):
         """The engine's address without /v1 (vLLM's /tokenize lives there)."""
@@ -134,11 +136,12 @@ class Routes:
             name = s.get("gateway_name") or s["served_name"]
             key = read_key(self.engine_key_path) if s.get("key_required") else ""
             out[name] = Route(name, "http://127.0.0.1:%d/v1" % int(s["port"]), s["served_name"], key,
-                              (s.get("dialect") or {}).get("thinking") or "")
+                              (s.get("dialect") or {}).get("thinking") or "", s.get("context") or 0)
         for r in self.config().get("routes") or []:
             if r.get("name") and r.get("url"):
                 key = read_key(r["key_file"]) if r.get("key_file") else (r.get("key") or "")
-                out[r["name"]] = Route(r["name"], r["url"], r.get("model") or r["name"], key, r.get("thinking") or "")
+                out[r["name"]] = Route(r["name"], r["url"], r.get("model") or r["name"], key, r.get("thinking") or "",
+                                       r.get("context") or 0)
         return out
 
     def engine_models(self, route):
@@ -422,6 +425,32 @@ def sse_events(resp):
             continue
 
 
+WINDOW = re.compile(r"maximum context length is (\d+) tokens.*?prompt contains at least (\d+) input tokens", re.S)
+
+
+def fit_max_tokens(body, route):
+    """Claude clients ask for answers up to Claude's own windows (Claude Code: 32k to 128k): cap the answer
+    so prompt and answer fit this engine's window, from a generous estimate of the prompt (3 chars a token)."""
+    if not route.context:
+        return
+    prompt = len(json.dumps(body.get("messages") or [])) // 3 + len(json.dumps(body.get("tools") or [])) // 3
+    room = max(256, route.context - prompt - 256)
+    if body.get("max_tokens", 0) > room:
+        body["max_tokens"] = room
+
+
+def refit_after(err_text, body):
+    """The engine's own numbers from a window refusal: the answer gets what is left, once. False when it cannot."""
+    m = WINDOW.search(err_text or "")
+    if not m:
+        return False
+    room = int(m.group(1)) - int(m.group(2)) - 16
+    if room < 1 or room >= body.get("max_tokens", 0):
+        return False
+    body["max_tokens"] = room
+    return True
+
+
 def estimate_tokens(req):
     """A count for count_tokens when the engine cannot tokenize: about four characters a token."""
     n = len(json.dumps(req.get("system") or "")) + len(json.dumps(req.get("messages") or []))
@@ -638,8 +667,16 @@ class Handler(BaseHTTPRequestHandler):
     def messages(self, req, route, asked, row):
         """Anthropic Messages, through the engine's chat completions."""
         body = to_openai(req, route)
+        fit_max_tokens(body, route)
         stops = req.get("stop_sequences") or []
-        resp = self.upstream(route, "/chat/completions", body)
+        try:
+            resp = self.upstream(route, "/chat/completions", body)
+        except urllib.error.HTTPError as e:
+            text = e.read().decode("utf-8", "replace")
+            e.close()
+            if e.code != 400 or not refit_after(text, body):
+                raise urllib.error.HTTPError(e.url, e.code, e.msg, e.headers, io.BytesIO(text.encode("utf-8")))
+            resp = self.upstream(route, "/chat/completions", body)
         with resp:
             if not req.get("stream"):
                 out = from_openai(json.loads(resp.read().decode("utf-8")), asked, stops)
