@@ -30,6 +30,22 @@ Claude Code and the Anthropic SDKs use the rack with
 They name Claude models; `aliases` in `gate/gate.json` map those names (globs) to the
 rack's models, e.g. `"claude-*": "glm-5.3-flash-uncensored"`.
 
+### Claude Code on the rack
+
+```
+rack gate key add my-laptop            # on the head; the key is shown once
+export ANTHROPIC_BASE_URL=http://<head's tailnet address>:4001
+export ANTHROPIC_API_KEY=<that key>
+claude
+```
+
+With `"claude-*": "<a rack model>"` in `gate/gate.json`'s aliases, every model
+Claude Code asks for is served by that model. Claude Code asks for answers up to
+128k tokens; the gate fits the answer to the engine's window (from
+`serving.json`'s context, then from the engine's own refusal, once).
+Measured 2026-10-21 with GLM-5.3-Flash on two Sparks: a Read tool call and its
+answer in two turns, 13.6 s, about 10.5k input tokens a turn.
+
 ## Routes
 
 From what is serving, never a hand-kept list:

@@ -183,7 +183,7 @@ PY
 cmd_logs() {
   [ "${1:-}" = -f ] && exec docker logs -f "$NAME"
   docker logs "$NAME" 2>&1 | tail -20
-  local f="$USAGE/usage-$(date +%Y-%m-%d).jsonl"
+  local f="$USAGE/usage-$(date -u +%Y-%m-%d).jsonl"     # named by UTC, as the gate names them
   [ -f "$f" ] && { echo "--- today's last requests"; tail -10 "$f"; }
   return 0
 }

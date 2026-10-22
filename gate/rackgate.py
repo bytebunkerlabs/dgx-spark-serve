@@ -468,7 +468,7 @@ class Usage:
         if not self.folder:
             return
         row = dict({"ts": round(time.time(), 3)}, **row)
-        path = os.path.join(self.folder, "usage-%s.jsonl" % time.strftime("%Y-%m-%d"))
+        path = os.path.join(self.folder, "usage-%s.jsonl" % time.strftime("%Y-%m-%d", time.gmtime()))   # UTC days
         try:
             with self.lock:
                 os.makedirs(self.folder, exist_ok=True)
