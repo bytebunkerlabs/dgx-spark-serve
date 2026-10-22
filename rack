@@ -580,7 +580,8 @@ cmd_keep() {
   [ "$IS_HEAD" = 1 ] || die "rack keep runs on the machine that serves"
   have crontab || die "rack keep needs cron (crontab), which this machine does not have"
   DGX_SERVE_STATE=$DGX_SERVE_STATE KEEP_GRACE_MIN=${KEEP_GRACE_MIN:-} KEEP_GAP_MIN=${KEEP_GAP_MIN:-} \
-    KEEP_MAX_PER_DAY=${KEEP_MAX_PER_DAY:-} python3 "$ROOT/py/keep.py" "${1:-check}" --rack "$ROOT/rack"
+    KEEP_MAX_PER_DAY=${KEEP_MAX_PER_DAY:-} RACK_NODES="$(rack_nodes_lines)" \
+    python3 "$ROOT/py/keep.py" "${1:-check}" --rack "$ROOT/rack"
 }
 
 # rack up and rack down switch keep on and off where it can work (cron, a Linux engine)

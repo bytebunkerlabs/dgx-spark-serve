@@ -64,6 +64,52 @@ class Decide(unittest.TestCase):
         self.assertEqual((a, st["first_bad"], st["recipe"]), ("none", T + 1000, "qwen"))
 
 
+class LostShare(unittest.TestCase):
+    """A worker that rebooted holds no engine while the head's /health still answers."""
+
+    def test_a_lost_share_is_served_again_after_two_checks_not_fifteen_minutes(self):
+        go = lambda st, now, lost: keep.decide(st, now, "glm", True, False, grace_s=900, gap_s=1800,
+                                               max_per_day=3, lost=lost)
+        a, st, why = go({}, T, ["spark-2"])
+        self.assertEqual(a, "none", why)
+        self.assertIn("spark-2's share of the engine is gone", why)
+        a, st, why = go(st, T + 120, ["spark-2"])
+        self.assertEqual(a, "restart", why)
+        a, st, why = go(st, T + 240, [])                 # formed again: answers, nothing lost
+        self.assertEqual((a, "first_bad" in st), ("none", False))
+
+    def test_shares_and_monitors_are_asked_on_every_node(self):
+        calls = []
+        tops = {"": "UID PID CMD\nme 1 sleep infinity\nme 2 python3 /usr/bin/vllm serve x",
+                "spark-2": "UID PID CMD\nme 1 sleep infinity"}
+
+        def fake(ssh, command, timeout=30):
+            calls.append((ssh, command))
+            if command.startswith("docker top"):
+                return (0, tops[ssh]) if ssh != "spark-3" else (None, "")
+            if command.startswith("docker ps -a"):
+                return 0, "rack-monitor exited\nrack-monitor-docker running\n" if ssh == "spark-2" else "rack-monitor running\n"
+            return 0, ""
+        saved = keep.on_node
+        keep.on_node = fake
+        try:
+            rack = [("spark-1", ""), ("spark-2", "spark-2"), ("spark-3", "spark-3")]
+            serving = {"runtime": "docker", "nodes": ["spark-1", "spark-2", "spark-3"]}
+            self.assertEqual(keep.lost_shares(serving, rack, "serve_node"), ["spark-2"])   # spark-3 unreachable: not lost
+            self.assertEqual(keep.lost_shares(dict(serving, nodes=["spark-1"]), rack, "serve_node"), [])   # solo
+            self.assertEqual(keep.start_monitors(rack[:2]), ["rack-monitor on spark-2"])
+            self.assertIn(("spark-2", "docker start rack-monitor >/dev/null 2>&1"), calls)
+        finally:
+            keep.on_node = saved
+
+    def test_nodes_from_rack(self):
+        os.environ["RACK_NODES"] = "spark-1\t\t192.168.100.1\nspark-2\tspark-2\t192.168.100.2\n"
+        try:
+            self.assertEqual(keep.nodes(), [("spark-1", ""), ("spark-2", "spark-2")])
+        finally:
+            del os.environ["RACK_NODES"]
+
+
 class Cron(unittest.TestCase):
     def test_its_block_and_nothing_else(self):
         mine = "0 3 * * * backup.sh\n# a note\n"

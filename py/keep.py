@@ -30,23 +30,27 @@ BEGIN, END = "# >>> dgx-serve keep", "# <<< dgx-serve keep"
 DAY = 86400
 
 
-def decide(state, now, serving, healthy, busy, grace_s=900, gap_s=1800, max_per_day=3):
-    """(action, new state, why): action is none, restart or giveup. Pure."""
+def decide(state, now, serving, healthy, busy, grace_s=900, gap_s=1800, max_per_day=3, lost=(), lost_grace_s=100):
+    """(action, new state, why): action is none, restart or giveup. Pure. `lost`: the nodes whose
+    share of a cluster's engine is gone; the head's /health still answers then (it did for 7.5 hours
+    after spark-2 rebooted on 2026-10-18), so a lost share is served again after two checks, not 15 min."""
     st = dict(state or {})
     st["restarts"] = [t for t in st.get("restarts") or [] if now - t < DAY]
     if not serving:
         return "none", {"restarts": st["restarts"]}, "nothing is recorded as serving"
     if busy:
         return "none", st, "a rack up or rack down is running"
-    if healthy:
+    if healthy and not lost:
         st.pop("first_bad", None)
         st.pop("gave_up", None)
         return "none", st, "the engine answers"
     if st.get("recipe") != serving:
         st = {"restarts": st["restarts"], "recipe": serving}
     first = st.setdefault("first_bad", now)
-    if now - first < grace_s:
-        return "none", st, "not answering for %d s (waits %d s: it may be loading)" % (now - first, grace_s)
+    wait = lost_grace_s if lost else grace_s
+    what = ("%s's share of the engine is gone" % ", ".join(lost)) if lost else "not answering"
+    if now - first < wait:
+        return "none", st, "%s for %d s (waits %d s%s)" % (what, now - first, wait, "" if lost else ": it may be loading")
     last = max(st["restarts"]) if st["restarts"] else None
     if last is not None and now - last < gap_s:
         return "none", st, "restarted %d s ago: gives it %d s" % (now - last, gap_s)
@@ -57,7 +61,7 @@ def decide(state, now, serving, healthy, busy, grace_s=900, gap_s=1800, max_per_
         return "giveup", st, "%d restarts in a day did not bring it back: look at rack logs" % len(st["restarts"])
     st["restarts"].append(now)
     st["first_bad"] = now                       # the restart's own load gets the grace again
-    return "restart", st, "not answering for %d s" % (now - first)
+    return "restart", st, "%s for %d s" % (what, now - first)
 
 
 def with_block(crontab, line):
@@ -128,6 +132,59 @@ class Keep:
             return None
 
 
+def nodes():
+    """[(name, ssh)] of the rack, the head first with no ssh, from RACK_NODES (rack passes it)."""
+    out = []
+    for line in (os.environ.get("RACK_NODES") or "").splitlines():
+        f = line.split("\t")
+        if f and f[0]:
+            out.append((f[0], f[1] if len(f) > 1 else ""))
+    return out
+
+
+def on_node(ssh, command, timeout=30):
+    """(exit code, output) of a command on a node: here when ssh is empty, else over ssh.
+    The code is None when the node cannot be asked (ssh failed)."""
+    argv = (["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh, command] if ssh
+            else ["sh", "-c", command])
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    return (None if ssh and r.returncode == 255 else r.returncode), r.stdout
+
+
+def lost_shares(serving, rack_nodes, container):
+    """The nodes whose share of a cluster's engine is not running in its container. A node that
+    cannot be asked is not counted lost: serving it again could not form the cluster anyway."""
+    names = (serving or {}).get("nodes") or []
+    if (serving or {}).get("runtime") != "docker" or len(names) < 2:
+        return []
+    ssh = dict(rack_nodes)
+    lost = []
+    for n in names:
+        if n not in ssh:
+            continue
+        code, out = on_node(ssh[n], "docker top %s 2>/dev/null" % container)
+        if code is not None and "vllm" not in out:
+            lost.append(n)
+    return lost
+
+
+def start_monitors(rack_nodes):
+    """Start a node's monitor containers that exist but are stopped (Docker does not retry one that
+    failed to start at boot: spark-2's stayed down for four days after 2026-10-18). Returns what started."""
+    started = []
+    for name, ssh in rack_nodes:
+        code, out = on_node(ssh, "docker ps -a --filter name=^rack-monitor --format '{{.Names}} {{.State}}' 2>/dev/null")
+        for line in (out or "").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] in ("rack-monitor", "rack-monitor-docker") and parts[1] != "running":
+                c, _ = on_node(ssh, "docker start %s >/dev/null 2>&1" % parts[0])
+                started.append("%s on %s%s" % (parts[0], name, "" if c == 0 else " (did not start)"))
+    return started
+
+
 def busy():
     """A rack up or rack down running now (the planner, py/serve.py)."""
     r = subprocess.run(["pgrep", "-f", r"py/serve\.py (up|down)"], capture_output=True, text=True)
@@ -145,11 +202,16 @@ def check(args):
     except OSError:
         return 0                                # the last check is still serving it again
 
+    rack_nodes = nodes()
+    for what in start_monitors(rack_nodes):
+        k.log("monitor: started %s" % what)
     s = k.serving()
     recipe = (s or {}).get("recipe") or ""
     up = bool(s) and serve.healthy("http://127.0.0.1:%d/health" % int(s.get("port") or 8888))
-    action, st, why = decide(k.load(), int(time.time()), recipe, up, busy(), grace_s=args.grace * 60,
-                             gap_s=args.gap * 60, max_per_day=args.max_per_day)
+    working = busy()
+    lost = lost_shares(s, rack_nodes, serve.NODE) if s and up and not working else []
+    action, st, why = decide(k.load(), int(time.time()), recipe, up, working, grace_s=args.grace * 60,
+                             gap_s=args.gap * 60, max_per_day=args.max_per_day, lost=lost)
     k.save(st)
     if action == "giveup":
         k.log("%s: %s" % (recipe, why))
