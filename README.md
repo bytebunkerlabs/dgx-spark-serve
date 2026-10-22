@@ -190,7 +190,8 @@ lib/
   pair.sh               rack pair, rack unpair, rack remote (the app key's only command)
 py/
   serve.py              rack up / rack down: the plan, then running it
-  engines.py            the pinned engines (llama.cpp b11430, vLLM)
+  engines.py            the pinned engines (llama.cpp b11675, vLLM)
+  keep.py               rack keep: a dead engine is served again (cron on the head)
   recipes.py            rack recipes, rack recipes check
   hfget.py, fetch.py    the Hugging Face downloader
   fit.py, rackfit.py    rack fit
@@ -213,6 +214,11 @@ monitor/
   rack-monitor.sh       rack monitor up [--bare]|down|status|token|logs
   Dockerfile            python:3.12-slim + rackmon.py
   test_rackmon.py       python3 -m unittest monitor/test_rackmon.py
+gate/
+  rackgate.py           rack gate: the front door, OpenAI + Anthropic Messages, a key per client (stdlib)
+  rack-gate.sh          rack gate up|down|status|logs|key
+  Dockerfile            python:3.12-slim + rackgate.py
+  test_rackgate.py      python3 -m unittest gate/test_rackgate.py
 docs/
   00-networking.md      the fabric: what preflight checks and why
   01-solo.md            phase 1 runbook
@@ -222,6 +228,7 @@ docs/
   11-monitor.md         rack monitor: what it measures, the API, reaching it
   12-platforms.md       dgx-serve 1.0: platforms, inventory, recipes, serving, settings
   13-pairing.md         the ByteBunker app and this rack: what pairing reads, what its key may run
+  14-gate.md            rack gate: the rack's own front door (replaces LiteLLM), Claude-compatible
 recipes/                a folder per model, a file per platform (TEMPLATE*.env scaffold them)
 bench/results.jsonl     the lab notebook — committed, append-only
 ```

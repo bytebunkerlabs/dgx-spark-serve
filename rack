@@ -15,6 +15,7 @@
 #   rack status                what's running, on both nodes
 #   rack logs [-f]             head and worker logs
 #   rack keep [on|off|status]  serve it again when the engine dies (cron; on with rack up)
+#   rack gate up|status|key    the rack's own front door: OpenAI and Anthropic APIs, a key per client
 #   rack bench [label]         measure the running model
 #   rack chat  <text>          one-shot completion against it
 #   rack monitor up            telemetry for every node, one endpoint for the app
@@ -110,6 +111,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack status                 containers, memory, API health
   rack logs [-f] [<node>|worker]   engine logs
   rack keep [on|off|status]   a dead engine is served again: cron asks every 2 min (on with rack up, off with down)
+  rack gate up|down|status|logs|key add <client>   the front door: OpenAI + Anthropic Messages, a key per client
   rack bench [label]          measure the running model
   rack chat <text>            one-shot completion
   rack net                    does the engine talk to the internet? verdict, every node
@@ -852,7 +854,7 @@ done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 if [ -n "$ON_NODE" ]; then
   case "${1:-}" in
-    init|nodes|install|pair|unpair|remote|keep|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
+    init|nodes|install|pair|unpair|remote|keep|gate|""|-h|--help|help) die "rack ${1:-} works on this machine only: no --on" ;;
   esac
   inv_has "$ON_NODE" || die "no such node: $ON_NODE  (rack nodes)"
   on_plat=$(inv_get "$ON_NODE" NODE_PLATFORM) on_plan=0
@@ -894,6 +896,9 @@ case "${1:-}" in
   unpair)    shift; cmd_unpair "$@" ;;
   remote)    shift; cmd_remote "$@" ;;
   keep)      shift; cmd_keep "$@" ;;
+  gate)      shift; [ "$IS_HEAD" = 1 ] || die "rack gate runs on the head"
+             RACK_ENGINE_KEY_FILE=$ENGINE_KEY_FILE DGX_SERVE_CONFIG=$DGX_SERVE_CONFIG DGX_SERVE_STATE=$DGX_SERVE_STATE \
+               GATE_PORT=${GATE_PORT:-} GATE_BIND=${GATE_BIND:-} exec "$ROOT/gate/rack-gate.sh" "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (rack --help)" ;;
 esac
