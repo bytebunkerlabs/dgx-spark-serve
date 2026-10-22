@@ -104,3 +104,58 @@ retired), `GATE_BIND` (comma-separated addresses).
    clients change only the port), or a new key per client.
 3. Point one client at 4001; compare for a few days.
 4. Stop LiteLLM, set `GATE_PORT=4000`, `rack gate up` again.
+
+## Compared with LiteLLM (2026-10-22)
+
+LiteLLM is a gateway and SDK for 100+ providers with a database, an admin UI,
+teams, budgets, MCP and agent gateways. A rack uses a small part of it. The gate
+builds that part, adds what a rack needs that LiteLLM does not do, and leaves out
+the rest on purpose. Status: **yes** (in the gate), **added** (the gate does it,
+LiteLLM does not), **next** (worth building soon), **later** (when a rack needs
+it), **no** (left out by design).
+
+| Area | LiteLLM | rack gate | Status |
+|---|---|---|---|
+| **APIs** | | | |
+| Chat completions, completions, embeddings | yes | passed through, renamed, engine key added | yes |
+| Anthropic Messages, count_tokens, models | yes | translated to the engine's chat API | yes |
+| OpenAI Responses API (Codex CLI) | yes | | next |
+| Rerank, images, audio (speech, transcription) | yes | passthrough once a rack serves such a model | later |
+| Realtime (WebSocket, WebRTC) | yes | | later |
+| Batches, files, fine-tuning, evals, assistants, vector stores, containers, memory, skills, OCR, search, videos, Gemini/Bedrock-native routes | yes | stateful or cloud products | no |
+| **Providers** | | | |
+| 100+ providers, each translated | yes | any OpenAI-compatible server (vLLM, llama.cpp, TensorFold, SGLang, Ollama's /v1, an OpenAI-compatible cloud) | yes, by design |
+| Bedrock, Vertex, Gemini, Azure native formats | yes | | no |
+| **Routing** | | | |
+| Model aliases, wildcards | yes | `aliases` with globs | yes |
+| Routes kept by hand in YAML | yes | from what is serving (`serving.json`) plus `gate.json` | added |
+| Only models that answer are listed | no (lists every configured route) | yes, asked every 10 s | added |
+| Answer fitted to the engine's window | context-window fallbacks | caps max_tokens, retries once with the engine's own numbers | added |
+| Load balancing across copies of a model | yes | | next |
+| Fallback to another model on error | yes | | next |
+| Retries, cooldowns, per-route timeouts | yes | one fixed read timeout | later |
+| drop_params (strip what an engine refuses) | yes | not needed so far | later |
+| Tag routing | yes | | no |
+| **Access** | | | |
+| A key per client, models it may use | virtual keys (database) | sha256 in a 0600 file, re-read live | yes |
+| Key expiry | yes | | next |
+| Per-key request limits (RPM, parallel) | yes | | next |
+| Teams, organizations, users, customers | yes | one owner's rack | no |
+| JWT, OIDC, SSO, SAML | yes (some enterprise) | tailnet and keys | no |
+| Budgets and cost in dollars | yes | the app's Usage screen prices tokens | no |
+| **Seeing it** | | | |
+| Per-request usage log | database, UI | JSONL: client, model, tokens, ms; never prompts | yes |
+| Prometheus metrics | yes | | next |
+| Logging callbacks (Langfuse, Datadog, OpenTelemetry...) | yes | nothing leaves the network | no |
+| Alerts (Slack, webhooks) | yes | | no |
+| Admin web UI | yes | the ByteBunker app, later | no (in the gate) |
+| **Other** | | | |
+| Response caching (Redis, in-memory, semantic) | yes | the engines' prefix caches do the real work | no |
+| Guardrails, PII masking | yes (enterprise) | | no |
+| Prompt management and templates | yes | | no |
+| MCP gateway, A2A agent gateway | yes | the app hosts MCP; agents run on their own worker | no |
+| Postgres, Redis | needed for keys and spend | no state but two files | no |
+| Secret managers (Vault, AWS, Azure, GCP) | yes | 0600 files | no |
+| Hot reload | config needs a restart; keys live | keys and gate.json re-read live | yes |
+| Hardened container (read-only, no capabilities) | no | yes | added |
+| Security advisories in 2026 | 15, several critical | | |

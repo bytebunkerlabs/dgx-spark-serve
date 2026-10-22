@@ -35,7 +35,9 @@ rack chat "hello"             one completion, with the engine key
 rack bench [label]            measure whatever is serving
 rack down                     stop it, everywhere it runs
 rack monitor up [--bare]      telemetry for every node behind one endpoint, for the app
-rack gateway [sync|...]       a LiteLLM route per serving recipe, when the site has a gateway
+rack gate up|status|key ...   the front door: OpenAI and Anthropic APIs, a key per client
+rack keep [on|off|status]     a dead engine is served again (cron; on with rack up)
+rack gateway [sync|...]       for a site that keeps LiteLLM: a route per serving recipe
 rack version [--json]         versions and schemas, for the app
 rack pair [--key K --name N]  what the ByteBunker app needs to reach this rack, and its own
                               ssh key, allowed to run rack here and nothing else
@@ -173,8 +175,33 @@ Full walkthrough with the reasoning behind each flag: [`docs/`](docs/) —
 | container | our image: NGC vLLM base + our launch layer | `Dockerfile` |
 | engine | vLLM — paged KV, CUDA graphs, quantized MoE | `recipes/*.env` |
 | distribution | NCCL over RoCE, tensor-parallel 2 | `scripts/launch-cluster.sh` |
-| serving | OpenAI-compatible API, behind the existing LiteLLM gateway | gateway config (unchanged) |
+| serving | OpenAI and Anthropic APIs behind `rack gate`, a key per client | `docs/14-gate.md` |
 | measurement | `scripts/bench.py` → `bench/results.jsonl` | `docs/04-tuning.md` |
+
+## Why rack gate, not LiteLLM
+
+Until October 2026 this rack fronted its engines with LiteLLM, as many do. A rack
+uses a sliver of it (one address, a public name per model, a key), but runs all
+of it: admin login, a key database, prompt templates, MCP and agent gateways.
+That surface had 15 security advisories in 2026, among them:
+
+| Advisory | Severity | What |
+|---|---|---|
+| GHSA-7hp6-4w63-5g45 | critical | an internal user forges a proxy-admin token and runs commands on the host (1.91.0 to 1.100.3, default config) |
+| CVE-2026-49468 | critical | authentication bypass through the Host header (before 1.84.0) |
+| CVE-2026-42208 | critical | SQL injection in API-key verification (1.81.16 to 1.83.6) |
+| CVE-2026-42271 | high | command execution through the MCP stdio test endpoints (1.74.2 to 1.83.6) |
+| GHSA-g5ff-637f-6q2m | high | arbitrary local file read (before 1.95.0) |
+
+This rack's own LiteLLM (1.93.0, the `main-latest` image) was exposed to the
+first and the last; it was patched on 2026-10-21 and replaced the next day.
+`rack gate` is one standard-library file in a read-only container with no
+capabilities: OpenAI and Anthropic Messages APIs (Claude Code works against the
+rack), routes from what is serving, a hashed key per client, a usage log without
+prompts, and none of the parts the advisories were in. What LiteLLM offers, what
+the gate has, adds, will add and leaves out on purpose:
+[docs/14-gate.md](docs/14-gate.md). LiteLLM's advisories:
+https://github.com/BerriAI/litellm/security/advisories
 
 ## Layout
 
