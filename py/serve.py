@@ -18,7 +18,13 @@ Serving is always detached. vLLM runs in a container with
 the head's boot unit re-forming it after a reboot); llama.cpp, TensorFold (a
 Mac), and vLLM on Windows without Docker, run natively under launchd (Mac) or
 a systemd user unit (Linux, WSL2). The launcher owns the host, the port, the served name
-and the API key, and caps a container's memory from the machine's total.
+and the API key, and caps a container's memory from the machine's total. ENGINE=external is
+an engine with its own start and stop commands: rack runs them, waits for it and records it
+like any other.
+
+While a rack up works, starting.json in the state folder says so (the monitor publishes it, so
+an app can show a model loading, or why it did not start); a heartbeat tells a working one from
+one that was killed.
 """
 import argparse
 import datetime
@@ -194,8 +200,10 @@ def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace
         raise PlanError("%s still has FILL_ME in %s: answer its questions first (docs/05-recipe-method.md)"
                         % (recipe_file, ", ".join(unanswered)))
     engine = d["engine"]
-    if engine not in ("vllm", "llamacpp", "tensorfold"):
-        raise PlanError("%s: ENGINE must be vllm, llamacpp or tensorfold (got: %s)" % (recipe_name, engine))
+    if engine not in ("vllm", "llamacpp", "tensorfold", "external"):
+        raise PlanError("%s: ENGINE must be vllm, llamacpp, tensorfold or external (got: %s)" % (recipe_name, engine))
+    if engine == "external" and not (v.get("EXTERNAL_UP") and v.get("EXTERNAL_DOWN")):
+        raise PlanError("%s: ENGINE=external needs EXTERNAL_UP and EXTERNAL_DOWN" % recipe_name)
     if engine == "tensorfold" and platform != "mac":
         raise PlanError("%s: TensorFold serves on a Mac here (MLX); this is %s" % (recipe_name, platform))
     model = v.get("MODEL") or ""
@@ -206,7 +214,9 @@ def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace
     if not site.key:
         notes.append("ENGINE_KEY=off: the engine takes requests without a key, so it listens on %s only "
                      "unless ENGINE_BIND says otherwise" % site.bind)
-    if engine in ("llamacpp", "tensorfold"):
+    if engine == "external":
+        runtime = "external"
+    elif engine in ("llamacpp", "tensorfold"):
         runtime = "launchd" if platform == "mac" else "systemd"
     elif platform in ("dgx", "linux"):
         runtime = "docker"
@@ -229,14 +239,63 @@ def plan_up(site, recipe_name, recipe_file, recipe_dir, platform, facts, replace
             plan_cluster(site, p, common, site.nodes[:nodes], facts, replace, boot)
         else:
             plan_docker_solo(site, p, common, facts, replace)
+    elif runtime == "external":
+        plan_external(site, p, common, replace)
     else:
         p["nodes"] = [site.head.json()]
         p["memory_cap_gb"] = mem_cap_gb(site, platform, facts) if runtime == "systemd" else None
         plan_native(site, p, common, facts, runtime, replace)
+    stop_external_first(site, p, recipe_name, replace)
     p["serving"] = serving_record(site, p, common)
     p["steps"].append(step(site.head, "record", "record what is serving",
                            path=os.path.join(site.state, "serving.json"), content=p["serving"]))
     return p
+
+
+def read_record(site):
+    try:
+        return json.load(open(os.path.join(site.state, "serving.json")))
+    except (OSError, ValueError):
+        return None
+
+
+def stop_external_first(site, p, recipe, replace):
+    """An external engine runs outside anything the other plans stop or see (its port may
+    differ too), so a plan starting while one is recorded deals with it first."""
+    s = read_record(site)
+    if not s or s.get("runtime") != "external":
+        return
+    at = next((i + 1 for i, x in enumerate(p["steps"]) if x["kind"] == "up-already"), 0)
+    p["steps"].insert(at, step(site.head, "external-first", "the external engine that is serving (%s)" % s.get("recipe"),
+                               replace=replace, record=os.path.join(site.state, "serving.json")))
+
+
+def plan_external(site, p, c, replace):
+    """An engine with its own start and stop commands (ENGINE=external): rack frees the rack for
+    it, runs EXTERNAL_UP, waits until it answers (EXTERNAL_ALIVE, when set, says it died first) and
+    records it, with EXTERNAL_DOWN for rack down. The command keeps its own memory limits."""
+    v, h = c["v"], site.head
+    steps = p["steps"]
+    p["nodes"] = [n.json() for n in site.nodes]
+    p["memory_cap_gb"] = None
+    p["log"] = v.get("EXTERNAL_LOG") or None
+    down = ["sh", "-c", v["EXTERNAL_DOWN"]]
+    if not replace:
+        steps.append(already_step(site, h, c))
+    steps += guard_steps(site, site.nodes, [SOLO, NODE], replace, True, c["port"])
+    if replace:
+        record = os.path.join(site.state, "serving.json")
+        unit = os.path.expanduser("~/.config/systemd/user/" + BOOT_UNIT)
+        # what it replaced must not come back: not at boot, not through rack keep if this load fails
+        steps.append(run(h, ["systemctl", "--user", "disable", BOOT_UNIT], "no re-forming at boot",
+                         ignore_errors=True, quiet=True))
+        steps.append(step(h, "remove", "the boot unit", path=unit, quiet=True))
+        steps.append(step(h, "remove", "the record of what was serving", path=record, quiet=True))
+    steps.append(run(h, ["sh", "-c", v["EXTERNAL_UP"]], "start it (EXTERNAL_UP)"))
+    wait = wait_step(site, h, c["port"], ["tail", "-n", "20", "-F", p["log"]] if p["log"] else None,
+                     ["sh", "-c", v["EXTERNAL_ALIVE"]] if v.get("EXTERNAL_ALIVE") else None, None)
+    wait["on_fail"] = down
+    steps.append(wait)
 
 
 def nodes_needed(site, d, platform, facts):
@@ -687,6 +746,7 @@ def serving_record(site, p, c):
             "vision": d.get("vision"), "speculative": d.get("speculative"), "image": p.get("image"),
             "engine_build": p.get("engine_build"), "log": p.get("log"), "rack_version": site.version,
             "gateway_name": c["v"].get("GATEWAY_NAME") or None,
+            "external_down": c["v"].get("EXTERNAL_DOWN") or None,
             "started_at": None}
 
 
@@ -725,7 +785,11 @@ def plan_down(site):
             steps.append(run(site.head, ["systemctl", "--user", "disable", "--now", UNIT], "stop the engine",
                              ignore_errors=True))
             steps.append(step(site.head, "remove", "the unit (no restart at boot)", path=unit))
+    if runtime == "external" and s.get("external_down"):
+        steps.append(run(site.head, ["sh", "-c", s["external_down"]], "stop the engine (EXTERNAL_DOWN)", ignore_errors=True))
     steps.append(step(site.head, "remove", "the record of what was serving", path=path))
+    steps.append(step(site.head, "remove", "the record of what was starting",
+                      path=os.path.join(site.state, "starting.json"), quiet=True))
     return p
 
 
@@ -856,6 +920,21 @@ class Executor:
             return
         if healthy(s["url"]):
             raise Done("the engine already answers (%s): nothing to re-form" % s["url"])
+
+    def do_external_first(self, s):
+        try:
+            rec = json.load(open(s["record"]))
+        except (OSError, ValueError):
+            return
+        if rec.get("runtime") != "external":
+            return
+        url = "http://127.0.0.1:%d/health" % int(rec.get("port") or 0)
+        if not s.get("replace") and healthy(url):
+            raise PlanError("%s is already serving (external): rack down first, or rack up --replace to swap it"
+                            % rec.get("recipe"))
+        if rec.get("external_down") and subprocess.run(["sh", "-c", rec["external_down"]]).returncode != 0:
+            raise PlanError("could not stop %s (EXTERNAL_DOWN failed)" % rec.get("recipe"))
+        os.remove(s["record"])
 
     def do_free(self, s):
         n = self.node(s)
@@ -1043,8 +1122,10 @@ class Executor:
                     want = s.get("alive_value")
                     dead = r.returncode != 0 if want is None else (r.stdout or "").strip() not in (want, "activating")
                     if dead:
+                        self.clean_up_failed(s)
                         raise PlanError("the engine stopped while starting: rack logs")
                 if time.time() > deadline:
+                    self.clean_up_failed(s)
                     raise PlanError("not healthy after %d s: rack logs -f (it keeps trying in the background)"
                                     % s["timeout"])
                 time.sleep(self.poll)
@@ -1054,6 +1135,10 @@ class Executor:
         finally:
             if logs:
                 logs.terminate()
+
+    def clean_up_failed(self, s):
+        if s.get("on_fail"):
+            subprocess.run(s["on_fail"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _pump(self, proc):
         for line in proc.stdout:
@@ -1119,6 +1204,49 @@ def resolve_revision_in(content, cache):
 
 
 # --------------------------------------------------------------------- CLI --
+class Starting:
+    """starting.json while a rack up works: loading with a heartbeat, gone when it serves, failed
+    with the reason when it does not. Never in the way: serving goes on if it cannot be written."""
+    EVERY = 15
+
+    def __init__(self, site, p):
+        self.path = os.path.join(site.state, "starting.json")
+        now = int(time.time())
+        self.rec = {"schema": 1, "state": "loading", "recipe": p.get("recipe"), "model": p.get("model"),
+                    "served_name": p.get("served_name"), "gateway_name": (p.get("serving") or {}).get("gateway_name"),
+                    "nodes": [n["name"] for n in p.get("nodes") or []], "started_at": now, "updated_at": now}
+        self.stop = threading.Event()
+        self.write()
+        threading.Thread(target=self.beat, daemon=True).start()
+
+    def write(self):
+        self.rec["updated_at"] = int(time.time())
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = "%s.%d.tmp" % (self.path, os.getpid())
+            with open(tmp, "w") as f:
+                json.dump(self.rec, f)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+    def beat(self):
+        while not self.stop.wait(self.EVERY):
+            self.write()
+
+    def done(self):
+        self.stop.set()
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    def failed(self, why):
+        self.stop.set()
+        self.rec.update(state="failed", error=str(why)[:500])
+        self.write()
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="serve.py")
     ap.add_argument("command", choices=["up", "down"])
@@ -1152,7 +1280,18 @@ def main(argv):
         if a.command == "up" and p.get("notes"):
             for n in p["notes"]:
                 print("note: " + n)
-        Executor(site, p).execute()
+        starting = Starting(site, p) if a.command == "up" else None
+        try:
+            Executor(site, p).execute()
+        except (PlanError, engines.EngineError, RuntimeError) as e:
+            if starting:
+                starting.failed(e)
+            raise
+        finally:
+            if starting:
+                starting.stop.set()     # a detach (Ctrl-C) leaves the file: without a heartbeat it reads as stopped
+        if starting:
+            starting.done()
         return 0
     except (PlanError, engines.EngineError, RuntimeError) as e:   # RuntimeError: a recipe that failed to source
         sys.stderr.write(term.paint(e, "31", sys.stderr) + "\n")

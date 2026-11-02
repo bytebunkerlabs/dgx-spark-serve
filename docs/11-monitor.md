@@ -190,3 +190,11 @@ python3 -m unittest monitor/test_rackmon.py -v                                  
 | no engines listed while one serves | port not in `MONITOR_ENGINE_PORTS`, and not rack up's | add it in `.env`, `rack monitor up` |
 | bare: `not running` after a reboot (Linux) | no linger | `sudo loginctl enable-linger $USER` |
 | app says unauthorized | token pasted with a newline or an old token | `rack monitor token`, paste again |
+
+## What is loading
+
+`rack up` writes `starting.json` beside `serving.json` while it works, and a node's snapshot
+carries it as `starting`, or `null` when nothing is starting: `state` is `loading`, `failed`
+(with `error`) or `interrupted` (the rack up stopped without saying why: no heartbeat for
+two minutes), with `recipe`, `served_name`, `gateway_name`, `nodes`, `started_at` and
+`updated_at` (epoch seconds). A finished one fades after a day; a successful load removes it.

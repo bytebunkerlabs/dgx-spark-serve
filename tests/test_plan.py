@@ -8,6 +8,7 @@ import io
 import json
 import os
 import plistlib
+import shlex
 import sys
 import threading
 import unittest
@@ -477,6 +478,102 @@ class Execute(Base):
         self.assertIn("cannot reach http://127.0.0.1:9", r.stderr)      # tests never reach the real hub
         self.assertIn("rack pull phase1-qwen3-8b failed", r.stderr)
         self.assertFalse([c for c in m.log("docker") if c.startswith("run")])
+
+
+class External(Base):
+    """ENGINE=external: an engine with its own start and stop commands, serving and switching like any other."""
+    STATE = (".local", "state", "dgx-serve")
+    env = Execute.env
+    weights = Execute.weights
+
+    def state(self, m, name):
+        return os.path.join(m.home, *self.STATE, name)
+
+    def recipe(self, m, name="ext", up=None, alive=None, down=None):
+        """A flat recipe for a stand-in engine on its own port, which marks when it is stopped."""
+        port = free_port()
+        up = up or 'cp "$HOME/.local/state/dgx-serve/starting.json" "$HOME/while-up.json"; STUB_PORT=%d; %s' % (port, ENGINE)
+        down = down or 'touch "$HOME/stopped"; kill "$(cat "$HOME/engine.pid")"; rm -f "$HOME/engine.pid"'
+        os.makedirs(m.config_path("recipes"), exist_ok=True)
+        with open(m.config_path("recipes", name + ".env"), "w") as f:
+            f.write("MODEL=org/Ext\nENGINE=external\nSERVED_NAME=ext-1\nGATEWAY_NAME=ext\n"
+                    "SERVE_ARGS=(--port %d --host 127.0.0.1 --ctx-size 16384 --jinja)\n" % port)
+            for k, v in (("EXTERNAL_UP", up), ("EXTERNAL_DOWN", down), ("EXTERNAL_ALIVE", alive)):
+                if v:
+                    f.write("%s=%s\n" % (k, shlex.quote(v)))
+        return port
+
+    def test_up_records_it_and_down_stops_it(self):
+        m = self.machine(dgx_spark)
+        m.logging_cmd("docker", "exit 0")
+        port = self.recipe(m)
+        r = m.rack("up", "ext", extra_env=self.env())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rec = json.load(open(self.state(m, "serving.json")))
+        self.assertEqual((rec["runtime"], rec["port"], rec["served_name"], rec["gateway_name"], rec["context"]),
+                         ("external", port, "ext-1", "ext", 16384))
+        # loading while it worked, and nothing left once it serves
+        self.assertEqual(json.load(open(os.path.join(m.home, "while-up.json")))["state"], "loading")
+        self.assertEqual(json.load(open(os.path.join(m.home, "while-up.json")))["recipe"], "ext")
+        self.assertFalse(os.path.exists(self.state(m, "starting.json")))
+        # the same recipe again: nothing to do
+        r = m.rack("up", "ext", extra_env=self.env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("serving already", r.stdout)
+        r = m.rack("down", extra_env=self.env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(m.home, "stopped")))
+        self.assertFalse(os.path.exists(self.state(m, "serving.json")))
+
+    def test_switching_from_it_to_a_container_and_back(self):
+        m = self.machine(dgx_spark)
+        self.weights(m)
+        m.logging_cmd("docker", 'case "$1" in inspect) echo true;; run) %s; echo 0123abcd;; esac' % ENGINE)
+        m.logging_cmd("sudo", "exit 1")
+        self.recipe(m)
+        env = self.env()
+        self.assertEqual(m.rack("up", "ext", extra_env=env).returncode, 0)
+        r = m.rack("up", "phase1", extra_env=env)                         # never on top of it by accident
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ext is already serving (external): rack down first, or rack up --replace", r.stderr)
+        r = m.rack("switch", "phase1", extra_env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(m.home, "stopped")))
+        self.assertEqual(json.load(open(self.state(m, "serving.json")))["recipe"], "phase1-qwen3-8b")
+        # and back: the container goes, and nothing can bring it back if this load fails
+        os.remove(os.path.join(m.home, "engine.pid"))
+        r = m.rack("switch", "ext", extra_env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("rm -f serve_solo serve_node", m.log("docker"))
+        self.assertEqual(json.load(open(self.state(m, "serving.json")))["recipe"], "ext")
+
+    def test_a_failed_start_says_why_and_cleans_up(self):
+        m = self.machine(dgx_spark)
+        m.logging_cmd("docker", "exit 0")
+        self.recipe(m, up="exit 3")
+        r = m.rack("up", "ext", extra_env=self.env())
+        self.assertNotEqual(r.returncode, 0)
+        d = json.load(open(self.state(m, "starting.json")))
+        self.assertEqual(d["state"], "failed")
+        self.assertIn("exit 3", d["error"])
+        self.assertFalse(os.path.exists(self.state(m, "serving.json")))
+        # one that dies while loading is stopped, so what it started does not hold the memory
+        self.recipe(m, up="true", alive="false")
+        r = m.rack("up", "ext", extra_env=self.env())
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("stopped while starting", json.load(open(self.state(m, "starting.json")))["error"])
+        self.assertTrue(os.path.exists(os.path.join(m.home, "stopped")))
+        # rack down clears it
+        self.assertEqual(m.rack("down", extra_env=self.env()).returncode, 0)
+        self.assertFalse(os.path.exists(self.state(m, "starting.json")))
+
+    def test_needs_both_commands(self):
+        m = self.machine(dgx_spark)
+        os.makedirs(m.config_path("recipes"), exist_ok=True)
+        with open(m.config_path("recipes", "half.env"), "w") as f:
+            f.write("MODEL=org/Ext\nENGINE=external\nEXTERNAL_UP=true\nSERVE_ARGS=(--port 9)\n")
+        r = m.rack("up", "half", "--plan", "--json")
+        self.assertIn("needs EXTERNAL_UP and EXTERNAL_DOWN", r.stderr)
 
 
 class Down(Base):

@@ -358,6 +358,26 @@ class Serving(unittest.TestCase):
         self.assertNotIn("log", d)
         self.assertIsNone(rackmon.read_serving(os.path.join(self.tmp, "none.json")))
 
+    def test_starting_says_loading_while_its_heartbeat_lasts(self):
+        p = os.path.join(self.tmp, "starting.json")
+        with open(p, "w") as f:
+            json.dump({"state": "loading", "recipe": "glm", "started_at": 1000, "updated_at": 1000, "secret": "x"}, f)
+        self.assertEqual(rackmon.read_starting(p, now=1100)["state"], "loading")
+        self.assertNotIn("secret", rackmon.read_starting(p, now=1100))
+        self.assertEqual(rackmon.read_starting(p, now=1000 + rackmon.STARTING_STALE_S + 1)["state"], "interrupted")
+        self.assertIsNone(rackmon.read_starting(p, now=1000 + rackmon.STARTING_KEPT_S + 1))
+        self.assertIsNone(rackmon.read_starting(os.path.join(self.tmp, "none.json")))
+
+    def test_a_failed_start_keeps_its_reason_for_a_day(self):
+        p = os.path.join(self.tmp, "starting.json")
+        with open(p, "w") as f:
+            json.dump({"state": "failed", "recipe": "glm", "error": "out of memory", "updated_at": 1000}, f)
+        d = rackmon.read_starting(p, now=5000)
+        self.assertEqual((d["state"], d["error"]), ("failed", "out of memory"))
+        with open(p, "w") as f:
+            f.write("[1]")
+        self.assertIsNone(rackmon.read_starting(p))
+
     def test_a_keyed_engine_rack_declared_is_found_and_read(self):
         key = os.path.join(self.tmp, "engine.key")
         with open(key, "w") as f:

@@ -448,6 +448,30 @@ def read_serving(path):
     return {k: d.get(k) for k in SERVING_KEYS} if isinstance(d, dict) else None
 
 
+# rack up's heartbeat is every 15 s: this long without one and whatever was loading has stopped
+STARTING_STALE_S = 120
+STARTING_KEPT_S = 86400
+
+
+def read_starting(path, now=None):
+    """What a rack up is starting here, or last failed to (starting.json), or None. A loading
+    record whose heartbeat stopped reads as interrupted; a finished one fades after a day."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        at = float(d.get("updated_at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    now = time.time() if now is None else now
+    out = {k: d.get(k) for k in ("state", "recipe", "model", "served_name", "gateway_name", "nodes",
+                                 "started_at", "updated_at", "error")}
+    if out["state"] == "loading" and now - at > STARTING_STALE_S:
+        out["state"] = "interrupted"
+    if out["state"] != "loading" and now - at > STARTING_KEPT_S:
+        return None
+    return out
+
+
 class Engine:
     """One inference server found on a local port, with enough of its own
     history to turn counters into rates and histograms into percentiles."""
@@ -624,6 +648,7 @@ class Node:
         self.own_port = int(env("MONITOR_PORT", "9177"))
         self.serving_path = env("MONITOR_SERVING", os.path.expanduser("~/.local/state/dgx-serve/serving.json"))
         self.serving = None
+        self.starting_path = os.path.join(os.path.dirname(self.serving_path), "starting.json")
         self.lock = threading.Lock()
         self.prev_stat, self.prev_net, self.prev_t = None, None, None
         self.prev_cg = {}
@@ -946,6 +971,7 @@ class Node:
             "gpu_error": self.gpu_error, "temps": temps, "disks": disks, "net": net,
             "engines": engines, "containers": containers, "containers_error": containers_error,
             "serving": self.serving,
+            "starting": read_starting(self.starting_path),
         }
 
         def by_kind(kind):

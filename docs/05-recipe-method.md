@@ -150,6 +150,29 @@ work. That makes your number the first one.
 
 ---
 
+## An engine with its own launcher
+
+Some engines are started by their own script (ranks over RPC, a build of their
+own, a guard beside them). `ENGINE=external` keeps the script and makes it a
+recipe like any other, in a flat file:
+
+```bash
+MODEL=org/Model
+ENGINE=external
+SERVED_NAME=my-model                 # what the engine lists: the script's --alias
+GATEWAY_NAME=my-model-on-the-gate    # optional: its name on rack gate
+EXTERNAL_UP="$HOME/engines/mine.sh up"          # returns once it is starting
+EXTERNAL_DOWN="$HOME/engines/mine.sh down"      # stops every part of it, on every node
+EXTERNAL_ALIVE="pgrep -x llama-server"          # optional: a non-zero exit while loading means it died
+EXTERNAL_LOG="$HOME/logs/mine.log"              # optional: rack up and rack logs read it
+SERVE_ARGS=(--port 8890 --host 127.0.0.1 --ctx-size 16384 --jinja)   # facts only: rack does not pass them
+```
+
+`rack up`, `rack switch`, `rack down`, `rack keep`, the gate and the app's model
+list then treat it like any other engine. A rack with an external engine serving
+refuses a plain `rack up` of another recipe, as it does with a container;
+`rack switch <recipe>` stops whichever is serving first.
+
 ## The failure ladder
 
 Recipes are not written. They are *survived*, then written down.

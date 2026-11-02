@@ -107,6 +107,7 @@ rack — serve models on DGX Spark, NVIDIA Linux, Windows (WSL2) and Mac
   rack build [community|ngc|upstream]   build the image and ship it to the workers
   rack preflight              read-only health check, every node
   rack up <recipe>            launch — solo or TP=2, whichever the recipe says; starts the monitor too (--no-monitor: not)
+  rack switch <recipe>        stop whatever serves, then the same (rack up --replace)
   rack down                   stop serving on every node
   rack status                 containers, memory, API health
   rack logs [-f] [<node>|worker]   engine logs
@@ -678,7 +679,7 @@ cmd_status() {
     esac
     echo
   fi
-  if [ "$runtime" = launchd ] || { [ "$runtime" = systemd ] && ! have docker; }; then
+  if [ "$runtime" = launchd ] || [ "$runtime" = external ] || { [ "$runtime" = systemd ] && ! have docker; }; then
     status_api; return
   fi
   bold "containers"
@@ -884,6 +885,7 @@ case "${1:-}" in
   build)     shift; cmd_build "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;
   up)        shift; cmd_up "$@" ;;
+  switch)    shift; cmd_up "$@" --replace ;;
   down)      shift; cmd_down "$@" ;;
   status)    shift; cmd_status "$@" ;;
   logs)      shift; cmd_logs "$@" ;;

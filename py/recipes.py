@@ -36,7 +36,8 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 ROLES = ["chat", "tools", "reasoning", "vision", "code", "embedding", "rerank", "draft"]
 SCALARS = ["MODEL", "MODEL_REVISION", "ENGINE", "IMAGE", "ARTIFACT", "ARTIFACT_REVISION", "ARTIFACT_MMPROJ",
            "DRAFTER", "DRAFTER_REVISION",
-           "ROLES", "WEIGHTS_GB", "SERVED_NAME", "GATEWAY_NAME"]
+           "ROLES", "WEIGHTS_GB", "SERVED_NAME", "GATEWAY_NAME",
+           "EXTERNAL_UP", "EXTERNAL_DOWN", "EXTERNAL_ALIVE", "EXTERNAL_LOG"]
 ARRAYS = ["SERVE_ARGS", "ENV_EXTRA", "MODS"]
 OWNED_FLAGS = ["--host", "--port", "--api-key", "--api-key-file"]
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -340,7 +341,7 @@ def describe(v, platform, flat):
         else:
             d["speculative"] = {"method": "mtp", "tokens": int(mtp) if isinstance(mtp, str) and mtp.isdigit() else None}
         d["quantization"] = "mlx"
-    elif engine == "llamacpp":
+    elif engine in ("llamacpp", "external"):
         ctx = flag(args, "--ctx-size", "-c")
         d["context"] = human_int(ctx) if isinstance(ctx, str) else None
         d["tools"] = "jinja" if flag(args, "--jinja") else None

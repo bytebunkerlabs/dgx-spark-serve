@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-02: an engine with its own launcher; what is loading is seen
+
+### New
+- **`ENGINE=external`**: a recipe around an engine's own start and stop commands
+  (docs/05-recipe-method.md). It is recorded like any other, so the gate routes it, the
+  monitor reports it, rack keep brings it back and `rack down` stops it, with no route to
+  keep by hand.
+- **`rack switch <recipe>`**: stop whatever serves, container or external, then serve this one
+  (`rack up --replace`).
+- **What is loading is seen.** `rack up` writes `starting.json` with a heartbeat. The monitor
+  publishes it as a `starting` block: loading, failed with the reason, or interrupted when the
+  heartbeat stops. A big model takes minutes to load, and until now that looked the same as
+  nothing being there.
+
 ## 2026-10-22: rack gate replaces LiteLLM; rack keep
 
 ### Security

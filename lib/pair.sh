@@ -223,7 +223,7 @@ remote_allowed() {
   local cmd=${1:-} sub=${2:-} w
   for w in "$@"; do case "$w" in --on|--on=*) return 1 ;; esac; done
   case "$cmd" in
-    version|platform|status|preflight|models|net|bench|logs|up|down|pull|fit) return 0 ;;
+    version|platform|status|preflight|models|net|bench|logs|up|switch|down|pull|fit) return 0 ;;
     recipes) case "$sub" in ''|show|check|--*) return 0 ;; esac ;;
     nodes)   case "$sub" in ''|ls|test|--json) return 0 ;; esac ;;
     gateway) case "$sub" in ''|status|sync) return 0 ;; esac ;;
